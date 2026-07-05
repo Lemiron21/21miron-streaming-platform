@@ -15,8 +15,11 @@ function App() {
   const [selectedStreams, setSelectedStreams] = useState([])
 
   const visibleStreams = useMemo(() => {
-    if (activeDepartment === 'all') return streams
-    return streams.filter((stream) => stream.departmentId === activeDepartment)
+    const departmentStreams = activeDepartment === 'all'
+      ? streams
+      : streams.filter((stream) => stream.departmentId === activeDepartment)
+
+    return departmentStreams.filter((stream) => stream.status === 'online')
   }, [activeDepartment])
 
   const activeDepartmentName = departments.find((item) => item.id === activeDepartment)?.name ?? 'Все трансляции'
@@ -60,7 +63,7 @@ function App() {
             <span className="pulse" />
             Состояние сервера: <b>онлайн</b>
           </div>
-          <div>Активные потоки: {serverStats.activeStreams} / {serverStats.maxStreams}</div>
+          <div>Активные потоки: {visibleStreams.length} / {serverStats.maxStreams}</div>
           <div>VPN IP: {serverStats.serverIp}</div>
         </div>
       </aside>
@@ -92,47 +95,47 @@ function App() {
           </div>
 
           <div className="selection-actions">
-            <button onClick={selectAllVisible}>Выбрать видимые</button>
+            <button onClick={selectAllVisible} disabled={!visibleStreams.length}>Выбрать видимые</button>
             <button className="danger" onClick={clearSelection}>Снять выбор</button>
           </div>
         </section>
 
-        <section className={`stream-grid ${gridMode}`}>
-          {visibleStreams.map((stream) => {
-            const selected = selectedStreams.includes(stream.id)
-            return (
-              <article key={stream.id} className={`stream-card ${selected ? 'selected' : ''}`}>
-                <div className="stream-card-header">
-                  <div>
-                    <h3>{stream.name}</h3>
-                    <span>{stream.departmentName}</span>
+        {visibleStreams.length === 0 ? (
+          <EmptyBroadcastState />
+        ) : (
+          <section className={`stream-grid ${gridMode}`}>
+            {visibleStreams.map((stream) => {
+              const selected = selectedStreams.includes(stream.id)
+              return (
+                <article key={stream.id} className={`stream-card ${selected ? 'selected' : ''}`}>
+                  <div className="stream-card-header">
+                    <div>
+                      <h3>{stream.name}</h3>
+                      <span>{stream.departmentName}</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={() => toggleStream(stream.id)}
+                      aria-label={`Выбрать ${stream.name}`}
+                    />
                   </div>
-                  <input
-                    type="checkbox"
-                    checked={selected}
-                    onChange={() => toggleStream(stream.id)}
-                    aria-label={`Выбрать ${stream.name}`}
-                  />
-                </div>
 
-                <div className="video-placeholder">
-                  <div className="video-grid-lines" />
-                  <div className={`live-badge ${stream.status === 'offline' ? 'offline' : ''}`}>
-                    {stream.status === 'offline' ? 'OFFLINE' : '● LIVE'}
+                  <div className="video-placeholder">
+                    <div className="video-grid-lines" />
+                    <div className="live-badge">● LIVE</div>
+                    <div className="latency-badge">{stream.latency} мс</div>
                   </div>
-                  <div className="latency-badge">
-                    {stream.latency ? `${stream.latency} мс` : 'нет сигнала'}
-                  </div>
-                </div>
 
-                <div className="stream-actions">
-                  <button>Открыть</button>
-                  <button className="secondary">Во весь экран</button>
-                </div>
-              </article>
-            )
-          })}
-        </section>
+                  <div className="stream-actions">
+                    <button>Открыть</button>
+                    <button className="secondary">Во весь экран</button>
+                  </div>
+                </article>
+              )
+            })}
+          </section>
+        )}
       </main>
 
       <aside className="info-panel">
@@ -155,11 +158,25 @@ function App() {
         </section>
 
         <section className="metrics-card compact">
-          <h2>v0.1</h2>
-          <p>React-интерфейс, отделы, сетки 2×2 / 3×3 / 4×4 / 5×5 и основа под API.</p>
+          <h2>v0.2 preview</h2>
+          <p>Добавлен экран отсутствия трансляций и подготовка к OBS → MediaMTX → сайт.</p>
         </section>
       </aside>
     </div>
+  )
+}
+
+function EmptyBroadcastState() {
+  return (
+    <section className="empty-broadcast">
+      <div className="empty-icon">🎥</div>
+      <h2>Извините, в данный момент видеотрансляции не ведутся</h2>
+      <p>Сервер ожидает подключения новых потоков. Как только OBS Studio начнёт трансляцию, видеоканал появится здесь автоматически.</p>
+      <div className="empty-details">
+        <span>Ожидание RTMP-потока</span>
+        <b>10.77.77.1:1935</b>
+      </div>
+    </section>
   )
 }
 
