@@ -1,0 +1,44 @@
+# 21miron Streaming Platform — MediaMTX config
+# RTMP ingest from OBS: rtmp://10.77.77.1:1935/test1
+# HLS playback: http://10.77.77.1:8888/test1/index.m3u8
+
+logLevel: info
+logDestinations: [stdout]
+
+api: yes
+apiAddress: 127.0.0.1:9997
+
+metrics: yes
+metricsAddress: 127.0.0.1:9998
+
+rtmp: yes
+rtmpAddress: :1935
+
+hls: yes
+hlsAddress: :8888
+hlsAllowOrigin: '*'
+hlsAlwaysRemux: yes
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigin: '*'
+
+rtsp: yes
+rtspAddress: :8554
+
+paths:
+  test1:
+    source: publisher
+
+  test2:
+    source: publisher
+
+  test3:
+    source: publisher
+
+  all_others:
+    source: publisher
