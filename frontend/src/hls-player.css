@@ -1,0 +1,28 @@
+.player-frame {
+  position: absolute;
+  inset: 0;
+  background: #000;
+}
+
+.stream-video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #000;
+  object-fit: contain;
+}
+
+.player-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  text-align: center;
+  color: #dbeafe;
+  font-weight: 800;
+  background:
+    radial-gradient(circle at center, rgba(37, 99, 235, 0.18), transparent 42%),
+    rgba(2, 6, 23, 0.58);
+  pointer-events: none;
+}
