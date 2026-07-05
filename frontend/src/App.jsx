@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react'
-import { departments, serverStats, streams } from './data/mockData.js'
+import { useEffect, useMemo, useState } from 'react'
+import HlsPlayer from './components/HlsPlayer.jsx'
+import { departments, serverStats } from './data/mockData.js'
 
 const gridOptions = [
   { id: 'grid-2', label: '2×2' },
@@ -13,14 +14,46 @@ function App() {
   const [activeDepartment, setActiveDepartment] = useState('all')
   const [gridMode, setGridMode] = useState('grid-2')
   const [selectedStreams, setSelectedStreams] = useState([])
+  const [streams, setStreams] = useState([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [apiError, setApiError] = useState(null)
+
+  useEffect(() => {
+    let ignore = false
+
+    const loadStreams = async () => {
+      try {
+        const response = await fetch('/api/streams', { cache: 'no-store' })
+        if (!response.ok) throw new Error(`API error: ${response.status}`)
+
+        const data = await response.json()
+        if (!ignore) {
+          setStreams(Array.isArray(data.streams) ? data.streams : [])
+          setApiError(null)
+        }
+      } catch (error) {
+        if (!ignore) {
+          setStreams([])
+          setApiError(error.message)
+        }
+      } finally {
+        if (!ignore) setIsLoading(false)
+      }
+    }
+
+    loadStreams()
+    const timer = setInterval(loadStreams, 2000)
+
+    return () => {
+      ignore = true
+      clearInterval(timer)
+    }
+  }, [])
 
   const visibleStreams = useMemo(() => {
-    const departmentStreams = activeDepartment === 'all'
-      ? streams
-      : streams.filter((stream) => stream.departmentId === activeDepartment)
-
-    return departmentStreams.filter((stream) => stream.status === 'online')
-  }, [activeDepartment])
+    if (activeDepartment === 'all') return streams
+    return streams.filter((stream) => stream.departmentId === activeDepartment)
+  }, [activeDepartment, streams])
 
   const activeDepartmentName = departments.find((item) => item.id === activeDepartment)?.name ?? 'Все трансляции'
 
@@ -60,10 +93,10 @@ function App() {
 
         <div className="sidebar-status">
           <div className="status-line">
-            <span className="pulse" />
-            Состояние сервера: <b>онлайн</b>
+            <span className={apiError ? 'pulse error' : 'pulse'} />
+            Состояние API: <b>{apiError ? 'ошибка' : 'онлайн'}</b>
           </div>
-          <div>Активные потоки: {visibleStreams.length} / {serverStats.maxStreams}</div>
+          <div>Активные потоки: {streams.length} / {serverStats.maxStreams}</div>
           <div>VPN IP: {serverStats.serverIp}</div>
         </div>
       </aside>
@@ -72,7 +105,7 @@ function App() {
         <header className="topbar">
           <div>
             <h1>{activeDepartmentName}</h1>
-            <p>Выберите раскладку и набор трансляций для просмотра</p>
+            <p>Список трансляций обновляется автоматически каждые 2 секунды</p>
           </div>
 
           <div className="topbar-card">
@@ -100,8 +133,10 @@ function App() {
           </div>
         </section>
 
-        {visibleStreams.length === 0 ? (
-          <EmptyBroadcastState />
+        {isLoading ? (
+          <LoadingState />
+        ) : visibleStreams.length === 0 ? (
+          <EmptyBroadcastState error={apiError} />
         ) : (
           <section className={`stream-grid ${gridMode}`}>
             {visibleStreams.map((stream) => {
@@ -122,9 +157,9 @@ function App() {
                   </div>
 
                   <div className="video-placeholder">
-                    <div className="video-grid-lines" />
+                    <HlsPlayer src={stream.hlsUrl} title={stream.name} />
                     <div className="live-badge">● LIVE</div>
-                    <div className="latency-badge">{stream.latency} мс</div>
+                    <div className="latency-badge">{stream.latency ?? 0} мс</div>
                   </div>
 
                   <div className="stream-actions">
@@ -158,20 +193,30 @@ function App() {
         </section>
 
         <section className="metrics-card compact">
-          <h2>v0.2 preview</h2>
-          <p>Добавлен экран отсутствия трансляций и подготовка к OBS → MediaMTX → сайт.</p>
+          <h2>v0.3 preview</h2>
+          <p>React получает активные потоки из FastAPI и автоматически обновляет список трансляций.</p>
         </section>
       </aside>
     </div>
   )
 }
 
-function EmptyBroadcastState() {
+function LoadingState() {
+  return (
+    <section className="empty-broadcast">
+      <div className="empty-icon">⏳</div>
+      <h2>Загрузка списка трансляций</h2>
+      <p>Проверяем состояние MediaMTX и активных OBS-потоков.</p>
+    </section>
+  )
+}
+
+function EmptyBroadcastState({ error }) {
   return (
     <section className="empty-broadcast">
       <div className="empty-icon">🎥</div>
       <h2>Извините, в данный момент видеотрансляции не ведутся</h2>
-      <p>Сервер ожидает подключения новых потоков. Как только OBS Studio начнёт трансляцию, видеоканал появится здесь автоматически.</p>
+      <p>{error ? `Ошибка API: ${error}` : 'Сервер ожидает подключения новых потоков. Как только OBS Studio начнёт трансляцию, видеоканал появится здесь автоматически.'}</p>
       <div className="empty-details">
         <span>Ожидание RTMP-потока</span>
         <b>10.77.77.1:1935</b>
