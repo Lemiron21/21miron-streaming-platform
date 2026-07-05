@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ title }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="layout">
+    <aside class="left">
+        <div class="brand">Сервер<br>трансляций: 21miron</div>
+
+        <button class="side-btn active" data-department="ALL" onclick="showAllDepartments(this)">▣ Все трансляции</button>
+
+        {% for department, count in departments.items() %}
+        <button class="side-btn" data-department="{{ department }}" onclick="toggleDepartment(this)">📁 {{ department }}</button>
+        {% endfor %}
+
+        <div class="side-status">
+            ● Состояние сервера: <span class="online">Онлайн</span><br>
+            Активные потоки: {{ streams|length }} / 100
+        </div>
+    </aside>
+
+    <main class="main">
+        <h1>Все трансляции</h1>
+        <div class="subtitle">Выберите раскладку для просмотра потоков</div>
+
+        <div class="toolbar">
+            <div class="layouts">
+                <button class="layout-btn active" onclick="setGrid('two', this)">▦ 2x2</button>
+                <button class="layout-btn" onclick="setGrid('three', this)">▦ 3x3</button>
+                <button class="layout-btn" onclick="setGrid('four', this)">▦ 4x4</button>
+                <button class="layout-btn" onclick="setGrid('five', this)">▦ 5x5</button>
+                <button class="layout-btn" onclick="setGrid('all', this)">▦ Все</button>
+            </div>
+
+            <div class="select-actions">
+                <button class="action-btn" onclick="selectAll()">☑ Выбрать все</button>
+                <button class="action-btn danger" onclick="clearSelection()">☐ Снять выбор</button>
+            </div>
+        </div>
+
+        <div class="grid" id="cameraGrid">
+            {% for department, name, url in streams %}
+            <div class="camera-card" data-department="{{ department }}" data-name="{{ name }}">
+                <div class="card-top">
+                    <div>
+                        <h3>{{ name }}</h3>
+                        <span>{{ department }}</span>
+                    </div>
+                    <input type="checkbox" class="stream-check">
+                </div>
+
+                <div class="video-box">
+                    <video controls muted playsinline>
+                        <source src="{{ url }}" type="application/x-mpegURL">
+                    </video>
+                    <div class="live-badge">● LIVE</div>
+                    <div class="ping-badge">23 мс</div>
+                </div>
+
+                <div class="card-actions">
+                    <button onclick="openSingle(this)">Открыть</button>
+                    <button onclick="fullscreenVideo(this)">Во весь экран</button>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </main>
+
+    <aside class="right">
+        <div class="user-card">
+            <span class="avatar">👤</span>
+            <b>Логин: {{ user }}</b><br>
+            <a href="/logout" class="logout-link">Выйти</a>
+        </div>
+
+        <div class="ping-card">
+            <h3>Задержки каналов (пинг)</h3>
+            <p class="muted">Средние значения</p>
+
+            <div class="ping-row">
+                <span>До сервера трансляций<br><small>21miron ({{ server_ip }})</small></span>
+                <span class="ping-value">21 мс</span>
+            </div>
+
+            <div class="ping-row">
+                <span>До MediaMTX (RTMP)<br><small>{{ server_ip }}:1935</small></span>
+                <span class="ping-value">19 мс</span>
+            </div>
+
+            <div class="ping-row">
+                <span>До HLS (HTTP)<br><small>{{ server_ip }}:8888</small></span>
+                <span class="ping-value">22 мс</span>
+            </div>
+
+            <div class="ping-row">
+                <span>До базы данных<br><small>{{ server_ip }}:5432</small></span>
+                <span class="ping-value">18 мс</span>
+            </div>
+
+            <p class="updated">Обновлено: 10:15:23</p>
+        </div>
+    </aside>
+</div>
+
+<div class="footer">© 2026 Сервер трансляций: 21miron. Версия: 1.0.0</div>
+
+<script src="/static/js/dashboard.js"></script>
+</body>
+</html>

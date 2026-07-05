@@ -1,0 +1,658 @@
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
+from passlib.hash import bcrypt
+import psycopg2
+
+app = FastAPI()
+
+DB = {
+    "dbname": "video_platform",
+    "user": "video_user",
+    "password": "30Bg_xnxxF",
+    "host": "127.0.0.1",
+    "port": 5432,
+}
+
+def db():
+    return psycopg2.connect(**DB)
+
+@app.on_event("startup")
+def init_db():
+    conn = db()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        login TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        is_admin BOOLEAN DEFAULT FALSE
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS departments (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS streams (
+        id SERIAL PRIMARY KEY,
+        department_id INTEGER REFERENCES departments(id),
+        name TEXT NOT NULL,
+        url TEXT NOT NULL
+    );
+    """)
+
+    cur.execute("SELECT id FROM users WHERE login='admin';")
+    if not cur.fetchone():
+        cur.execute(
+            "INSERT INTO users (login, password_hash, is_admin) VALUES (%s, %s, %s)",
+            ("admin", bcrypt.hash("admin123"), True)
+        )
+
+    cur.execute("SELECT id FROM departments LIMIT 1;")
+    if not cur.fetchone():
+        cur.execute("INSERT INTO departments (name) VALUES ('Тестовый отдел');")
+        cur.execute(
+            "INSERT INTO streams (department_id, name, url) VALUES (1, 'Тестовая трансляция 1', 'http://10.77.77.1:8888/test1/index.m3u8');"
+        )
+        cur.execute(
+            "INSERT INTO streams (department_id, name, url) VALUES (1, 'Тестовая трансляция 2', 'http://10.77.77.1:8888/test2/index.m3u8');"
+        )
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+@app.get("/", response_class=HTMLResponse)
+def login_page():
+    return """
+    <html>
+    <head>
+        <title>Video Platform</title>
+        <style>
+            body { background:#0b1220; color:white; font-family:Arial; display:flex; justify-content:center; align-items:center; height:100vh; }
+            .box { background:#111827; padding:30px; border-radius:12px; width:320px; }
+            input, button { width:100%; padding:12px; margin-top:10px; border-radius:8px; border:0; }
+            button { background:#2563eb; color:white; cursor:pointer; }
+        </style>
+    </head>
+    <body>
+        <form class="box" method="post" action="/login">
+            <h2>Вход</h2>
+            <input name="login" placeholder="Логин">
+            <input name="password" type="password" placeholder="Пароль">
+            <button>Войти</button>
+            <p>Тест: admin / admin123</p>
+        </form>
+    </body>
+    </html>
+    """
+
+@app.post("/login")
+def login(login: str = Form(...), password: str = Form(...)):
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("SELECT password_hash FROM users WHERE login=%s;", (login,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if row and bcrypt.verify(password, row[0]):
+        response = RedirectResponse("/dashboard", status_code=302)
+        response.set_cookie("user", login)
+        return response
+
+    return RedirectResponse("/", status_code=302)
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request):
+    user = request.cookies.get("user")
+    if not user:
+        return RedirectResponse("/")
+
+    conn = db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT departments.name, streams.name, streams.url
+        FROM streams
+        JOIN departments ON streams.department_id = departments.id
+        ORDER BY departments.name, streams.name;
+    """)
+    streams = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    cards = ""
+    departments = {}
+
+    for department, name, url in streams:
+        departments[department] = departments.get(department, 0) + 1
+        cards += f"""
+        <div class="camera-card" data-department="{department}" data-name="{name}">
+            <div class="card-top">
+                <div>
+                    <h3>{name}</h3>
+                    <span>{department}</span>
+                </div>
+                <input type="checkbox" class="stream-check">
+            </div>
+
+            <div class="video-box">
+                <video controls muted playsinline>
+                    <source src="{url}" type="application/x-mpegURL">
+                </video>
+                <div class="live-badge">● LIVE</div>
+                <div class="ping-badge">23 мс</div>
+            </div>
+
+            <div class="card-actions">
+                <button onclick="openSingle(this)">Открыть</button>
+                <button onclick="fullscreenVideo(this)">Во весь экран</button>
+            </div>
+        </div>
+        """
+
+    department_items = ""
+    for department, count in departments.items():
+        department_items += f"""
+        <button class="side-btn" data-department="{department}" onclick="toggleDepartment(this)">
+            📁 {department}
+        </button>
+        """
+
+    return f"""
+    <html>
+    <head>
+        <title>Сервер трансляций: 21miron</title>
+        <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+        <style>
+            * {{ box-sizing: border-box; }}
+
+            body {{
+                margin: 0;
+                background: #06101f;
+                color: #e5e7eb;
+                font-family: Arial, sans-serif;
+            }}
+
+            button {{
+                cursor: pointer;
+                font-family: inherit;
+            }}
+
+            .layout {{
+                display: grid;
+                grid-template-columns: 300px 1fr 340px;
+                min-height: 100vh;
+            }}
+
+            .left {{
+                background: linear-gradient(180deg, #071426, #050b16);
+                border-right: 1px solid #1f2937;
+                padding: 24px 18px;
+                display: flex;
+                flex-direction: column;
+            }}
+
+            .brand {{
+                font-size: 26px;
+                font-weight: 800;
+                line-height: 1.15;
+                margin-bottom: 34px;
+            }}
+
+            .side-btn {{
+                width: 100%;
+                background: transparent;
+                color: #dbeafe;
+                border: 0;
+                text-align: left;
+                padding: 16px;
+                border-radius: 10px;
+                margin-bottom: 14px;
+                font-size: 16px;
+            }}
+
+            .side-btn.active {{
+                background: #1d4ed8;
+                color: white;
+            }}
+
+            .side-status {{
+                margin-top: auto;
+                background: #0f1b2d;
+                border: 1px solid #1f2937;
+                border-radius: 12px;
+                padding: 16px;
+                color: #cbd5e1;
+                line-height: 1.7;
+            }}
+
+            .online {{
+                color: #22c55e;
+                font-weight: bold;
+            }}
+
+            .main {{
+                padding: 28px 30px;
+            }}
+
+            .main h1 {{
+                margin: 0;
+                font-size: 30px;
+            }}
+
+            .subtitle {{
+                color: #94a3b8;
+                margin-top: 8px;
+                margin-bottom: 28px;
+            }}
+
+            .toolbar {{
+                display: flex;
+                justify-content: space-between;
+                gap: 16px;
+                flex-wrap: wrap;
+                margin-bottom: 22px;
+            }}
+
+            .layouts, .select-actions {{
+                display: flex;
+                gap: 10px;
+                flex-wrap: wrap;
+            }}
+
+            .layout-btn, .action-btn {{
+                background: #0f1b2d;
+                color: #dbeafe;
+                border: 1px solid #1e3a8a;
+                padding: 13px 18px;
+                border-radius: 9px;
+                font-weight: bold;
+                font-size: 15px;
+            }}
+
+            .layout-btn.active {{
+                background: #2563eb;
+                color: white;
+            }}
+
+            .action-btn.danger {{
+                border-color: #dc2626;
+                color: #f87171;
+            }}
+
+            .grid {{
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 16px;
+            }}
+
+            .grid.one {{ grid-template-columns: 1fr; }}
+            .grid.three {{ grid-template-columns: repeat(3, 1fr); }}
+            .grid.four {{ grid-template-columns: repeat(4, 1fr); }}
+            .grid.eight {{ grid-template-columns: repeat(8, 1fr); }}
+            .grid.sixteen {{ grid-template-columns: repeat(16, 1fr); }}
+
+            .camera-card {{
+                background: #0f1b2d;
+                border: 1px solid #1f2937;
+                border-radius: 12px;
+                overflow: hidden;
+            }}
+
+            .camera-card.hidden {{
+                display: none;
+            }}
+
+            .camera-card.selected {{
+                border-color: #2563eb;
+            }}
+
+            .card-top {{
+                padding: 14px;
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+            }}
+
+            .card-top h3 {{
+                margin: 0 0 8px 0;
+                font-size: 17px;
+            }}
+
+            .card-top span {{
+                color: #94a3b8;
+            }}
+
+            .stream-check {{
+                width: 20px;
+                height: 20px;
+            }}
+
+            .video-box {{
+                position: relative;
+                background: black;
+            }}
+
+            video {{
+                width: 100%;
+                height: 220px;
+                background: black;
+                object-fit: cover;
+                display: block;
+            }}
+
+            .live-badge {{
+                position: absolute;
+                right: 10px;
+                top: 10px;
+                background: rgba(20, 83, 45, 0.9);
+                color: #86efac;
+                padding: 5px 8px;
+                border-radius: 6px;
+                font-size: 12px;
+                font-weight: bold;
+            }}
+
+            .ping-badge {{
+                position: absolute;
+                right: 10px;
+                bottom: 10px;
+                background: rgba(20, 83, 45, 0.9);
+                color: #86efac;
+                padding: 5px 8px;
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: bold;
+            }}
+
+            .card-actions {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 8px;
+                padding: 10px;
+            }}
+
+            .card-actions button {{
+                background: #2563eb;
+                color: white;
+                border: 0;
+                padding: 12px;
+                border-radius: 8px;
+                font-weight: bold;
+            }}
+
+            .card-actions button:nth-child(2) {{
+                background: #172033;
+            }}
+
+            .right {{
+                background: #071426;
+                border-left: 1px solid #1f2937;
+                padding: 18px;
+            }}
+
+            .user-card, .ping-card {{
+                background: #0f1b2d;
+                border: 1px solid #1f2937;
+                border-radius: 12px;
+                padding: 18px;
+                margin-bottom: 16px;
+            }}
+
+            .avatar {{
+                width: 58px;
+                height: 58px;
+                border-radius: 50%;
+                background: #2563eb;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 28px;
+                margin-right: 12px;
+                vertical-align: middle;
+            }}
+
+            .ping-row {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                border-top: 1px solid #1f2937;
+                padding: 16px 0;
+                color: #cbd5e1;
+            }}
+
+            .ping-row:first-of-type {{
+                border-top: 0;
+            }}
+
+            .ping-value {{
+                color: #4ade80;
+                font-weight: bold;
+            }}
+
+            .footer {{
+                position: fixed;
+                left: 300px;
+                right: 340px;
+                bottom: 0;
+                background: #071426;
+                border-top: 1px solid #1f2937;
+                text-align: center;
+                color: #94a3b8;
+                padding: 12px;
+            }}
+
+            a {{
+                color: #f87171;
+                text-decoration: none;
+            }}
+
+            @media (max-width: 1300px) {{
+                .layout {{
+                    grid-template-columns: 260px 1fr;
+                }}
+                .right {{
+                    display: none;
+                }}
+                .footer {{
+                    left: 260px;
+                    right: 0;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="layout">
+            <aside class="left">
+                <div class="brand">Сервер<br>трансляций: 21miron</div>
+
+                <button class="side-btn active" data-department="ALL" onclick="showAllDepartments(this)">▣ Все трансляции</button>
+                {department_items}
+
+                <div class="side-status">
+                    ● Состояние сервера: <span class="online">Онлайн</span><br>
+                    Активные потоки: {len(streams)} / 100
+                </div>
+            </aside>
+
+            <main class="main">
+                <h1>Все трансляции</h1>
+                <div class="subtitle">Выберите раскладку для просмотра потоков</div>
+
+                <div class="toolbar">
+                    <div class="layouts">
+                        <button class="layout-btn active" onclick="setGrid('two', this)">▦ 2x2</button>
+                        <button class="layout-btn" onclick="setGrid('three', this)">▦ 3x3</button>
+                        <button class="layout-btn" onclick="setGrid('four', this)">▦ 4x4</button>
+                        <button class="layout-btn" onclick="setGrid('eight', this)">▦ 8x8</button>
+                        <button class="layout-btn" onclick="setGrid('sixteen', this)">▦ 16x16</button>
+                    </div>
+
+                    <div class="select-actions">
+                        <button class="action-btn" onclick="selectAll()">☑ Выбрать все</button>
+                        <button class="action-btn danger" onclick="clearSelection()">☐ Снять выбор</button>
+                    </div>
+                </div>
+
+                <div class="grid" id="cameraGrid">
+                    {cards}
+                </div>
+            </main>
+
+            <aside class="right">
+                <div class="user-card">
+                    <span class="avatar">👤</span>
+                    <b>Логин: {user}</b><br>
+                    <a href="/logout" style="margin-left:74px;">Выйти</a>
+                </div>
+
+                <div class="ping-card">
+                    <h3>Задержки каналов (пинг)</h3>
+                    <p style="color:#94a3b8;">Средние значения</p>
+
+                    <div class="ping-row">
+                        <span>До сервера трансляций<br><small>21miron</small></span>
+                        <span class="ping-value">21 мс</span>
+                    </div>
+
+                    <div class="ping-row">
+                        <span>До MediaMTX (RTMP)<br><small>10.10.10.1:1935</small></span>
+                        <span class="ping-value">19 мс</span>
+                    </div>
+
+                    <div class="ping-row">
+                        <span>До HLS (HTTP)<br><small>10.10.10.1:8888</small></span>
+                        <span class="ping-value">22 мс</span>
+                    </div>
+
+                    <div class="ping-row">
+                        <span>До базы данных<br><small>10.10.10.1:5432</small></span>
+                        <span class="ping-value">18 мс</span>
+                    </div>
+
+                    <p style="color:#94a3b8;text-align:center;">Обновлено: 10:15:23</p>
+                </div>
+            </aside>
+        </div>
+
+        <div class="footer">© 2026 Сервер трансляций: 21miron. Версия: 1.0.0</div>
+
+        <script>
+        function initHls(video) {{
+            const source = video.querySelector("source").src;
+            if (video.dataset.hlsReady === "1") return;
+
+            if (Hls.isSupported()) {{
+                const hls = new Hls();
+                hls.loadSource(source);
+                hls.attachMedia(video);
+                video.dataset.hlsReady = "1";
+            }} else if (video.canPlayType("application/vnd.apple.mpegurl")) {{
+                video.src = source;
+                video.dataset.hlsReady = "1";
+            }}
+        }}
+
+        document.querySelectorAll("video").forEach(video => initHls(video));
+
+        document.querySelectorAll(".stream-check").forEach(check => {{
+            check.addEventListener("change", function() {{
+                this.closest(".camera-card").classList.toggle("selected", this.checked);
+            }});
+        }});
+
+        let activeDepartment = "ALL";
+
+        function setGrid(mode, btn) {{
+            const grid = document.getElementById("cameraGrid");
+            grid.classList.remove("one", "three", "four", "eight", "sixteen");
+
+            if (mode === "three") grid.classList.add("three");
+            if (mode === "four") grid.classList.add("four");
+            if (mode === "eight") grid.classList.add("eight");
+            if (mode === "sixteen") grid.classList.add("sixteen");
+
+            document.querySelectorAll(".layout-btn").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+        }}
+
+        function toggleDepartment(btn) {{
+            activeDepartment = btn.dataset.department;
+
+            document.querySelectorAll(".side-btn").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+
+            applyDepartmentFilter();
+            document.querySelector(".main h1").innerText = activeDepartment;
+        }}
+
+        function showAllDepartments(btn) {{
+            activeDepartment = "ALL";
+
+            document.querySelectorAll(".side-btn").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+
+            document.querySelectorAll(".camera-card").forEach(card => card.classList.remove("hidden"));
+            document.querySelector(".main h1").innerText = "Все трансляции";
+        }}
+
+        function applyDepartmentFilter() {{
+            document.querySelectorAll(".camera-card").forEach(card => {{
+                const dep = card.dataset.department;
+                card.classList.toggle("hidden", dep !== activeDepartment);
+            }});
+        }}
+
+        function selectAll() {{
+            document.querySelectorAll(".camera-card:not(.hidden) .stream-check").forEach(check => {{
+                check.checked = true;
+                check.closest(".camera-card").classList.add("selected");
+            }});
+        }}
+
+        function clearSelection() {{
+            document.querySelectorAll(".stream-check").forEach(check => {{
+                check.checked = false;
+                check.closest(".camera-card").classList.remove("selected");
+            }});
+        }}
+
+        function openSingle(button) {{
+            document.querySelectorAll(".camera-card").forEach(card => card.classList.add("hidden"));
+            const card = button.closest(".camera-card");
+            card.classList.remove("hidden");
+
+            const grid = document.getElementById("cameraGrid");
+            grid.classList.remove("three", "four", "eight", "sixteen");
+            grid.classList.add("one");
+
+            const video = card.querySelector("video");
+            initHls(video);
+            video.play().catch(() => {{}});
+        }}
+
+        function fullscreenVideo(button) {{
+            const video = button.closest(".camera-card").querySelector("video");
+            initHls(video);
+
+            if (video.requestFullscreen) {{
+                video.requestFullscreen();
+            }}
+            video.play().catch(() => {{}});
+        }}
+        </script>
+    </body>
+    </html>
+    """
+
+@app.get("/logout")
+def logout():
+    response = RedirectResponse("/")
+    response.delete_cookie("user")
+    return response
