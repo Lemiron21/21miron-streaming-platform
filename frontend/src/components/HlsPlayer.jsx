@@ -1,109 +1,106 @@
 import { useEffect, useRef, useState } from 'react'
+import Hls from 'hls.js'
 
 function HlsPlayer({ src, title }) {
   const videoRef = useRef(null)
   const hlsRef = useRef(null)
   const retryRef = useRef(null)
-  const [statusText, setStatusText] = useState('Подключение к видеопотоку...')
-  const [isReady, setIsReady] = useState(false)
+  const [status, setStatus] = useState('Подключение к видеопотоку...')
+  const [ready, setReady] = useState(false)
 
   useEffect(() => {
     const video = videoRef.current
     if (!video || !src) return undefined
 
-    let stopped = false
-    let retryCount = 0
+    let closed = false
 
-    const clearPlayer = () => {
+    const destroy = () => {
       window.clearTimeout(retryRef.current)
 
       if (hlsRef.current) {
         hlsRef.current.destroy()
         hlsRef.current = null
       }
-
-      video.pause()
-      video.removeAttribute('src')
-      video.load()
     }
 
-    const markReady = () => {
-      if (stopped) return
-      setIsReady(true)
-      setStatusText('')
+    const showVideo = () => {
+      if (closed) return
+      setReady(true)
+      setStatus('')
       video.muted = true
       video.play().catch(() => {})
     }
 
-    const reconnect = (delay = 1500) => {
-      if (stopped) return
-      setIsReady(false)
-      setStatusText('Переподключение к видеопотоку...')
-      window.clearTimeout(retryRef.current)
-      retryRef.current = window.setTimeout(() => {
-        retryCount += 1
-        start()
-      }, delay)
+    const reconnect = () => {
+      if (closed) return
+      setReady(false)
+      setStatus('Ожидание видеопотока...')
+      destroy()
+      retryRef.current = window.setTimeout(connect, 2000)
     }
 
-    const start = async () => {
-      if (stopped) return
+    const connect = () => {
+      if (closed) return
 
-      clearPlayer()
-      setIsReady(false)
-      setStatusText(retryCount > 0 ? 'Переподключение к видеопотоку...' : 'Подключение к видеопотоку...')
+      destroy()
+      setReady(false)
+      setStatus('Подключение к видеопотоку...')
+
+      if (Hls.isSupported()) {
+        const hls = new Hls({
+          lowLatencyMode: false,
+          enableWorker: true,
+          backBufferLength: 10,
+          maxBufferLength: 20,
+          fragLoadingTimeOut: 20000,
+          manifestLoadingTimeOut: 20000,
+        })
+
+        hlsRef.current = hls
+
+        hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+          hls.loadSource(src)
+        })
+
+        hls.on(Hls.Events.MANIFEST_PARSED, showVideo)
+        hls.on(Hls.Events.LEVEL_LOADED, showVideo)
+        hls.on(Hls.Events.FRAG_LOADED, showVideo)
+
+        hls.on(Hls.Events.ERROR, (_event, data) => {
+          if (closed || !data?.fatal) return
+
+          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+            hls.recoverMediaError()
+            return
+          }
+
+          reconnect()
+        })
+
+        hls.attachMedia(video)
+        return
+      }
 
       if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = src
-        video.addEventListener('canplay', markReady, { once: true })
+        video.addEventListener('loadedmetadata', showVideo, { once: true })
+        video.addEventListener('canplay', showVideo, { once: true })
+        video.addEventListener('error', reconnect, { once: true })
         video.play().catch(() => {})
         return
       }
 
-      const { default: Hls } = await import('hls.js')
-
-      if (!Hls.isSupported()) {
-        setStatusText('Этот браузер не поддерживает HLS-воспроизведение')
-        return
-      }
-
-      const hls = new Hls({
-        lowLatencyMode: false,
-        backBufferLength: 10,
-        maxBufferLength: 20,
-      })
-
-      hlsRef.current = hls
-      hls.loadSource(src)
-      hls.attachMedia(video)
-
-      hls.on(Hls.Events.MANIFEST_PARSED, markReady)
-      hls.on(Hls.Events.LEVEL_LOADED, markReady)
-      hls.on(Hls.Events.FRAG_LOADED, markReady)
-
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (stopped) return
-        if (!data?.fatal) return
-
-        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-          reconnect(1500)
-          return
-        }
-
-        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-          hls.recoverMediaError()
-          return
-        }
-
-        reconnect(2500)
-      })
+      setStatus('Браузер не поддерживает HLS-воспроизведение')
     }
 
-    start().catch(() => reconnect(2000))
+    connect()
 
     return () => {
-      stopped = true
-      clearPlayer()
+      closed = true
+      destroy()
+      video.pause()
+      video.removeAttribute('src')
+      video.load()
     }
   }, [src])
 
@@ -120,9 +117,7 @@ function HlsPlayer({ src, title }) {
         title={title}
       />
 
-      {!isReady && statusText && (
-        <div className="player-state">{statusText}</div>
-      )}
+      {!ready && <div className="player-state">{status}</div>}
     </div>
   )
 }
