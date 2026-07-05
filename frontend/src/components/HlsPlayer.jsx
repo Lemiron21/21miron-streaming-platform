@@ -4,108 +4,106 @@ function HlsPlayer({ src, title }) {
   const videoRef = useRef(null)
   const hlsRef = useRef(null)
   const retryRef = useRef(null)
-  const [state, setState] = useState('connecting')
+  const [statusText, setStatusText] = useState('Подключение к видеопотоку...')
+  const [isReady, setIsReady] = useState(false)
 
   useEffect(() => {
     const video = videoRef.current
     if (!video || !src) return undefined
 
-    let destroyed = false
+    let stopped = false
     let retryCount = 0
 
-    const cleanupHls = () => {
+    const clearPlayer = () => {
+      window.clearTimeout(retryRef.current)
+
       if (hlsRef.current) {
         hlsRef.current.destroy()
         hlsRef.current = null
       }
+
+      video.pause()
+      video.removeAttribute('src')
+      video.load()
     }
 
-    const scheduleReconnect = (delay = 1500) => {
-      if (destroyed) return
+    const markReady = () => {
+      if (stopped) return
+      setIsReady(true)
+      setStatusText('')
+      video.muted = true
+      video.play().catch(() => {})
+    }
+
+    const reconnect = (delay = 1500) => {
+      if (stopped) return
+      setIsReady(false)
+      setStatusText('Переподключение к видеопотоку...')
       window.clearTimeout(retryRef.current)
       retryRef.current = window.setTimeout(() => {
         retryCount += 1
-        connect()
+        start()
       }, delay)
     }
 
-    const connect = async () => {
-      if (destroyed) return
+    const start = async () => {
+      if (stopped) return
 
-      cleanupHls()
-      setState(retryCount > 0 ? 'reconnecting' : 'connecting')
+      clearPlayer()
+      setIsReady(false)
+      setStatusText(retryCount > 0 ? 'Переподключение к видеопотоку...' : 'Подключение к видеопотоку...')
 
-      try {
-        if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = src
-          video.muted = true
-          video.play().catch(() => {})
-          return
-        }
-
-        const { default: Hls } = await import('hls.js')
-
-        if (!Hls.isSupported()) {
-          setState('error')
-          return
-        }
-
-        const hls = new Hls({
-          lowLatencyMode: true,
-          liveSyncDurationCount: 2,
-          liveMaxLatencyDurationCount: 6,
-          backBufferLength: 15,
-          maxBufferLength: 10,
-          maxLiveSyncPlaybackRate: 1.5,
-        })
-
-        hlsRef.current = hls
-        hls.attachMedia(video)
-
-        hls.on(Hls.Events.MEDIA_ATTACHED, () => {
-          hls.loadSource(src)
-        })
-
-        hls.on(Hls.Events.MANIFEST_PARSED, () => {
-          if (destroyed) return
-          setState('ready')
-          video.muted = true
-          video.play().catch(() => {})
-        })
-
-        hls.on(Hls.Events.ERROR, (_event, data) => {
-          if (destroyed) return
-
-          if (!data?.fatal) return
-
-          if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-            hls.startLoad()
-            scheduleReconnect(1200)
-            return
-          }
-
-          if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-            hls.recoverMediaError()
-            return
-          }
-
-          setState('reconnecting')
-          scheduleReconnect(2000)
-        })
-      } catch (_error) {
-        setState('reconnecting')
-        scheduleReconnect(2000)
+      if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = src
+        video.addEventListener('canplay', markReady, { once: true })
+        video.play().catch(() => {})
+        return
       }
+
+      const { default: Hls } = await import('hls.js')
+
+      if (!Hls.isSupported()) {
+        setStatusText('Этот браузер не поддерживает HLS-воспроизведение')
+        return
+      }
+
+      const hls = new Hls({
+        lowLatencyMode: false,
+        backBufferLength: 10,
+        maxBufferLength: 20,
+      })
+
+      hlsRef.current = hls
+      hls.loadSource(src)
+      hls.attachMedia(video)
+
+      hls.on(Hls.Events.MANIFEST_PARSED, markReady)
+      hls.on(Hls.Events.LEVEL_LOADED, markReady)
+      hls.on(Hls.Events.FRAG_LOADED, markReady)
+
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (stopped) return
+        if (!data?.fatal) return
+
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          reconnect(1500)
+          return
+        }
+
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          hls.recoverMediaError()
+          return
+        }
+
+        reconnect(2500)
+      })
     }
 
-    connect()
+    start().catch(() => reconnect(2000))
 
     return () => {
-      destroyed = true
-      window.clearTimeout(retryRef.current)
-      cleanupHls()
-      video.removeAttribute('src')
-      video.load()
+      stopped = true
+      clearPlayer()
     }
   }, [src])
 
@@ -122,10 +120,8 @@ function HlsPlayer({ src, title }) {
         title={title}
       />
 
-      {state !== 'ready' && (
-        <div className="player-state">
-          {state === 'reconnecting' ? 'Переподключение к видеопотоку...' : 'Подключение к видеопотоку...'}
-        </div>
+      {!isReady && statusText && (
+        <div className="player-state">{statusText}</div>
       )}
     </div>
   )
