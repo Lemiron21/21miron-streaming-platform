@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import HlsPlayer from './components/HlsPlayer.jsx'
+import WebRtcPlayer from './components/WebRtcPlayer.jsx'
 import { departments, serverStats } from './data/mockData.js'
 
 const gridOptions = [
@@ -105,7 +105,7 @@ function App() {
         <header className="topbar">
           <div>
             <h1>{activeDepartmentName}</h1>
-            <p>Список трансляций обновляется автоматически каждые 2 секунды</p>
+            <p>Основной режим просмотра: WebRTC. Список обновляется каждые 2 секунды.</p>
           </div>
 
           <div className="topbar-card">
@@ -157,9 +157,9 @@ function App() {
                   </div>
 
                   <div className="video-placeholder">
-                    <HlsPlayer src={stream.hlsUrl} title={stream.name} />
+                    <WebRtcPlayer streamId={stream.id} title={stream.name} />
                     <div className="live-badge">● LIVE</div>
-                    <div className="latency-badge">{stream.latency ?? 0} мс</div>
+                    <div className="latency-badge">WebRTC</div>
                   </div>
 
                   <div className="stream-actions">
@@ -188,13 +188,13 @@ function App() {
 
           <Metric label="До сервера трансляций" value={`${serverStats.avgPing} мс`} hint={`21miron (${serverStats.serverIp})`} />
           <Metric label="До MediaMTX RTMP" value={`${serverStats.mediamtxRtmpPing} мс`} hint={`${serverStats.serverIp}:1935`} />
-          <Metric label="До HLS HTTP" value={`${serverStats.hlsPing} мс`} hint={`${serverStats.serverIp}:8888`} />
+          <Metric label="До MediaMTX WebRTC" value={`${serverStats.hlsPing} мс`} hint={`${serverStats.serverIp}:8889`} />
           <Metric label="До PostgreSQL" value={`${serverStats.databasePing} мс`} hint={`${serverStats.serverIp}:5432`} />
         </section>
 
         <section className="metrics-card compact">
-          <h2>v0.3 preview</h2>
-          <p>React получает активные потоки из FastAPI и автоматически обновляет список трансляций.</p>
+          <h2>v0.4 preview</h2>
+          <p>Основной режим просмотра переключен на WebRTC через MediaMTX. HLS оставляем резервным способом воспроизведения.</p>
         </section>
       </aside>
     </div>
