@@ -1,15 +1,19 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import OvenPlayer from 'ovenplayer'
 
-function getOmeBaseUrl() {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const httpProtocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
-  const host = window.location.hostname
+let ovenPlayerLoader = null
 
-  return {
-    webrtc: `${protocol}//${host}:3333`,
-    llhls: `${httpProtocol}//${host}:3333`,
+function loadOvenPlayer() {
+  if (!ovenPlayerLoader) {
+    ovenPlayerLoader = import('ovenplayer').then((module) => module.default ?? module)
   }
+
+  return ovenPlayerLoader
+}
+
+function getOmeWebRtcUrl(streamId) {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const host = window.location.hostname
+  return `${protocol}//${host}:3333/app/${encodeURIComponent(streamId)}`
 }
 
 function destroyPlayer(player) {
@@ -61,40 +65,39 @@ function WebRtcPlayer({ streamId, title }) {
       retryRef.current = window.setTimeout(connect, 2000)
     }
 
-    const connect = () => {
+    const connect = async () => {
       if (closed) return
 
       cleanup()
       setReady(false)
       setStatus('Подключение к OvenMediaEngine...')
 
-      const playerElement = document.getElementById(playerId)
-      const createPlayer = OvenPlayer?.create ?? window.OvenPlayer?.create
-
-      if (!playerElement || typeof createPlayer !== 'function') {
-        reconnect('OvenPlayer не загрузился. Повторное подключение...')
-        return
-      }
-
-      const { webrtc, llhls } = getOmeBaseUrl()
-      const safeStreamId = encodeURIComponent(streamId)
-
       try {
+        const playerElement = document.getElementById(playerId)
+        if (!playerElement) {
+          reconnect('Контейнер плеера ещё не готов. Повторное подключение...')
+          return
+        }
+
+        const OvenPlayer = await loadOvenPlayer()
+        if (closed) return
+
+        const createPlayer = OvenPlayer?.create ?? window.OvenPlayer?.create
+        if (typeof createPlayer !== 'function') {
+          reconnect('OvenPlayer не загрузился. Повторное подключение...')
+          return
+        }
+
         const player = createPlayer(playerId, {
           autoStart: true,
-          autoFallback: true,
+          autoFallback: false,
           mute: true,
           controls: true,
           sources: [
             {
               label: 'WebRTC',
               type: 'webrtc',
-              file: `${webrtc}/app/${safeStreamId}`,
-            },
-            {
-              label: 'LL-HLS reserve',
-              type: 'llhls',
-              file: `${llhls}/app/${safeStreamId}/llhls.m3u8`,
+              file: getOmeWebRtcUrl(streamId),
             },
           ],
         })
