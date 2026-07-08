@@ -1,48 +1,59 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import OvenPlayer from 'ovenplayer'
 
-function waitForIceGatheringComplete(peerConnection) {
-  if (peerConnection.iceGatheringState === 'complete') {
-    return Promise.resolve()
+function getOmeBaseUrl() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const httpProtocol = window.location.protocol === 'https:' ? 'https:' : 'http:'
+  const host = window.location.hostname
+
+  return {
+    webrtc: `${protocol}//${host}:3333`,
+    llhls: `${httpProtocol}//${host}:3333`,
   }
+}
 
-  return new Promise((resolve) => {
-    const checkState = () => {
-      if (peerConnection.iceGatheringState === 'complete') {
-        peerConnection.removeEventListener('icegatheringstatechange', checkState)
-        resolve()
-      }
+function destroyPlayer(player) {
+  if (!player) return
+
+  try {
+    if (typeof player.remove === 'function') {
+      player.remove()
+      return
     }
 
-    peerConnection.addEventListener('icegatheringstatechange', checkState)
-  })
+    if (typeof player.destroy === 'function') {
+      player.destroy()
+      return
+    }
+
+    if (typeof player.close === 'function') {
+      player.close()
+    }
+  } catch {
+    // ignore cleanup errors
+  }
 }
 
 function WebRtcPlayer({ streamId, title }) {
-  const videoRef = useRef(null)
-  const peerRef = useRef(null)
+  const rawId = useId()
+  const playerId = `ome-player-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`
+  const playerRef = useRef(null)
   const retryRef = useRef(null)
-  const [status, setStatus] = useState('Подключение WebRTC...')
+  const [status, setStatus] = useState('Подключение к OvenMediaEngine...')
   const [ready, setReady] = useState(false)
 
   useEffect(() => {
-    const video = videoRef.current
-    if (!video || !streamId) return undefined
+    if (!streamId) return undefined
 
     let closed = false
-    const whepUrl = `/webrtc/${encodeURIComponent(streamId)}/whep`
 
     const cleanup = () => {
       window.clearTimeout(retryRef.current)
-
-      if (peerRef.current) {
-        peerRef.current.close()
-        peerRef.current = null
-      }
-
-      video.srcObject = null
+      destroyPlayer(playerRef.current)
+      playerRef.current = null
     }
 
-    const reconnect = (message = 'Переподключение WebRTC...') => {
+    const reconnect = (message = 'Переподключение к видеопотоку...') => {
       if (closed) return
       setReady(false)
       setStatus(message)
@@ -50,69 +61,73 @@ function WebRtcPlayer({ streamId, title }) {
       retryRef.current = window.setTimeout(connect, 2000)
     }
 
-    const connect = async () => {
+    const connect = () => {
       if (closed) return
 
       cleanup()
       setReady(false)
-      setStatus('Подключение WebRTC...')
+      setStatus('Подключение к OvenMediaEngine...')
+
+      const playerElement = document.getElementById(playerId)
+      const createPlayer = OvenPlayer?.create ?? window.OvenPlayer?.create
+
+      if (!playerElement || typeof createPlayer !== 'function') {
+        reconnect('OvenPlayer не загрузился. Повторное подключение...')
+        return
+      }
+
+      const { webrtc, llhls } = getOmeBaseUrl()
+      const safeStreamId = encodeURIComponent(streamId)
 
       try {
-        const peerConnection = new RTCPeerConnection({
-          iceServers: [],
+        const player = createPlayer(playerId, {
+          autoStart: true,
+          autoFallback: true,
+          mute: true,
+          controls: true,
+          sources: [
+            {
+              label: 'WebRTC',
+              type: 'webrtc',
+              file: `${webrtc}/app/${safeStreamId}`,
+            },
+            {
+              label: 'LL-HLS reserve',
+              type: 'llhls',
+              file: `${llhls}/app/${safeStreamId}/llhls.m3u8`,
+            },
+          ],
         })
 
-        peerRef.current = peerConnection
+        playerRef.current = player
 
-        peerConnection.addTransceiver('video', { direction: 'recvonly' })
-        peerConnection.addTransceiver('audio', { direction: 'recvonly' })
-
-        peerConnection.ontrack = (event) => {
-          if (closed || !event.streams?.[0]) return
-          video.srcObject = event.streams[0]
-          video.muted = true
-          video.play().catch(() => {})
+        player.on('ready', () => {
+          if (closed) return
           setReady(true)
           setStatus('')
-        }
+        })
 
-        peerConnection.onconnectionstatechange = () => {
+        player.on('play', () => {
           if (closed) return
+          setReady(true)
+          setStatus('')
+        })
 
-          if (peerConnection.connectionState === 'connected') {
+        player.on('stateChanged', (state) => {
+          if (closed) return
+          if (state?.newstate === 'playing') {
             setReady(true)
             setStatus('')
-            return
           }
-
-          if (['failed', 'closed', 'disconnected'].includes(peerConnection.connectionState)) {
-            reconnect('WebRTC-соединение потеряно. Переподключение...')
-          }
-        }
-
-        const offer = await peerConnection.createOffer()
-        await peerConnection.setLocalDescription(offer)
-        await waitForIceGatheringComplete(peerConnection)
-
-        const response = await fetch(whepUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/sdp',
-          },
-          body: peerConnection.localDescription.sdp,
         })
 
-        if (!response.ok) {
-          throw new Error(`WHEP error ${response.status}`)
-        }
-
-        const answer = await response.text()
-        await peerConnection.setRemoteDescription({
-          type: 'answer',
-          sdp: answer,
+        player.on('error', (error) => {
+          if (closed) return
+          const errorText = error?.message || error?.code || 'ошибка воспроизведения'
+          reconnect(`OvenMediaEngine: ${errorText}. Переподключение...`)
         })
       } catch (error) {
-        reconnect(error?.message ? `WebRTC ошибка: ${error.message}` : 'WebRTC ошибка. Переподключение...')
+        reconnect(error?.message ? `OvenPlayer ошибка: ${error.message}` : 'OvenPlayer ошибка. Переподключение...')
       }
     }
 
@@ -122,20 +137,11 @@ function WebRtcPlayer({ streamId, title }) {
       closed = true
       cleanup()
     }
-  }, [streamId])
+  }, [playerId, streamId])
 
   return (
     <div className="player-frame">
-      <video
-        ref={videoRef}
-        className="stream-video"
-        autoPlay
-        muted
-        playsInline
-        controls
-        title={title}
-      />
-
+      <div id={playerId} className="stream-video" title={title} />
       {!ready && <div className="player-state">{status}</div>}
     </div>
   )
