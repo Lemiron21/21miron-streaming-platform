@@ -105,7 +105,7 @@ function App() {
         <header className="topbar">
           <div>
             <h1>{activeDepartmentName}</h1>
-            <p>Основной режим просмотра: WebRTC. Список обновляется каждые 2 секунды.</p>
+            <p>Основной режим просмотра: OvenMediaEngine WebRTC. Список обновляется каждые 2 секунды.</p>
           </div>
 
           <div className="topbar-card">
@@ -159,7 +159,7 @@ function App() {
                   <div className="video-placeholder">
                     <WebRtcPlayer streamId={stream.id} title={stream.name} />
                     <div className="live-badge">● LIVE</div>
-                    <div className="latency-badge">WebRTC</div>
+                    <div className="latency-badge">OME WebRTC</div>
                   </div>
 
                   <div className="stream-actions">
@@ -187,14 +187,14 @@ function App() {
           <p>Средние значения от клиента до сервера</p>
 
           <Metric label="До сервера трансляций" value={`${serverStats.avgPing} мс`} hint={`21miron (${serverStats.serverIp})`} />
-          <Metric label="До MediaMTX RTMP" value={`${serverStats.mediamtxRtmpPing} мс`} hint={`${serverStats.serverIp}:1935`} />
-          <Metric label="До MediaMTX WebRTC" value={`${serverStats.hlsPing} мс`} hint={`${serverStats.serverIp}:8889`} />
+          <Metric label="До OvenMediaEngine RTMP" value={`${serverStats.mediamtxRtmpPing} мс`} hint={`${serverStats.serverIp}:1935`} />
+          <Metric label="До OvenMediaEngine WebRTC" value={`${serverStats.hlsPing} мс`} hint={`${serverStats.serverIp}:3333 / 10000-10004 UDP`} />
           <Metric label="До PostgreSQL" value={`${serverStats.databasePing} мс`} hint={`${serverStats.serverIp}:5432`} />
         </section>
 
         <section className="metrics-card compact">
-          <h2>v0.4 preview</h2>
-          <p>Основной режим просмотра переключен на WebRTC через MediaMTX. HLS оставляем резервным способом воспроизведения.</p>
+          <h2>v0.5 preview</h2>
+          <p>Основной режим просмотра переключен на OvenMediaEngine WebRTC. LL-HLS используется как резервный источник.</p>
         </section>
       </aside>
     </div>
@@ -206,7 +206,7 @@ function LoadingState() {
     <section className="empty-broadcast">
       <div className="empty-icon">⏳</div>
       <h2>Загрузка списка трансляций</h2>
-      <p>Проверяем состояние MediaMTX и активных OBS-потоков.</p>
+      <p>Проверяем состояние OvenMediaEngine и активных OBS-потоков.</p>
     </section>
   )
 }
@@ -219,7 +219,7 @@ function EmptyBroadcastState({ error }) {
       <p>{error ? `Ошибка API: ${error}` : 'Сервер ожидает подключения новых потоков. Как только OBS Studio начнёт трансляцию, видеоканал появится здесь автоматически.'}</p>
       <div className="empty-details">
         <span>Ожидание RTMP-потока</span>
-        <b>10.77.77.1:1935</b>
+        <b>10.77.77.1:1935/app · test1</b>
       </div>
     </section>
   )
