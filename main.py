@@ -1,4 +1,8 @@
 import os
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 from urllib.error import URLError
 from urllib.request import Request as UrlRequest, urlopen
 
@@ -19,19 +23,37 @@ templates = Jinja2Templates(directory="/opt/video-platform/templates")
 DB = {
     "dbname": os.getenv("DB_NAME", "video_platform"),
     "user": os.getenv("DB_USER", "video_user"),
-    "password": os.getenv("DB_PASSWORD", "StrongPassword123!"),
+    "password": os.getenv("DB_PASSWORD", ""),
     "host": os.getenv("DB_HOST", "127.0.0.1"),
     "port": int(os.getenv("DB_PORT", "5432")),
 }
 
 SERVER_IP = os.getenv("VIDEO_SERVER_IP", "10.77.77.1")
 OME_HTTP_URL = os.getenv("OME_HTTP_URL", "http://127.0.0.1:3333")
-STREAM_IDS = [item.strip() for item in os.getenv("STREAM_IDS", "test1,test2,test3").split(",") if item.strip()]
+
+DISCOVERY_PREFIX = os.getenv("STREAM_DISCOVERY_PREFIX", "test")
+DISCOVERY_START = int(os.getenv("STREAM_DISCOVERY_START", "1"))
+DISCOVERY_END = int(os.getenv("STREAM_DISCOVERY_END", "200"))
+DISCOVERY_TIMEOUT = float(os.getenv("STREAM_DISCOVERY_TIMEOUT", "0.35"))
+DISCOVERY_WORKERS = int(os.getenv("STREAM_DISCOVERY_WORKERS", "32"))
+DISCOVERY_CACHE_TTL = float(os.getenv("STREAM_DISCOVERY_CACHE_TTL", "2"))
+STREAM_DEPARTMENT_SIZE = int(os.getenv("STREAM_DEPARTMENT_SIZE", "50"))
+
+EXPLICIT_STREAM_IDS = [item.strip() for item in os.getenv("STREAM_IDS", "").split(",") if item.strip()]
+AUTO_STREAM_IDS = [f"{DISCOVERY_PREFIX}{index}" for index in range(DISCOVERY_START, DISCOVERY_END + 1)]
+CANDIDATE_STREAM_IDS = EXPLICIT_STREAM_IDS or AUTO_STREAM_IDS
+
 STREAM_DEPARTMENTS = {
     "test1": ("department-1", "Отдел 1"),
-    "test2": ("department-2", "Отдел 2"),
-    "test3": ("department-3", "Отдел 3"),
+    "test2": ("department-1", "Отдел 1"),
+    "test3": ("department-1", "Отдел 1"),
 }
+
+_DISCOVERY_CACHE = {
+    "updated_at": 0.0,
+    "streams": [],
+}
+_DISCOVERY_LOCK = Lock()
 
 
 def db():
@@ -50,10 +72,68 @@ def is_ome_stream_online(stream_id: str) -> bool:
     )
 
     try:
-        with urlopen(request, timeout=1.5) as response:
+        with urlopen(request, timeout=DISCOVERY_TIMEOUT) as response:
             return 200 <= response.status < 300
     except (URLError, TimeoutError, OSError):
         return False
+
+
+def department_for_stream(stream_id: str, fallback_index: int) -> tuple[str, str]:
+    if stream_id in STREAM_DEPARTMENTS:
+        return STREAM_DEPARTMENTS[stream_id]
+
+    match = re.search(r"(\d+)$", stream_id)
+    stream_number = int(match.group(1)) if match else fallback_index
+    department_number = max(1, ((stream_number - 1) // STREAM_DEPARTMENT_SIZE) + 1)
+    return f"department-{department_number}", f"Отдел {department_number}"
+
+
+def stream_payload(stream_id: str, index: int) -> dict:
+    department_id, department_name = department_for_stream(stream_id, index)
+
+    return {
+        "id": stream_id,
+        "name": stream_id,
+        "departmentId": department_id,
+        "departmentName": department_name,
+        "status": "online",
+        "latency": 1,
+        "webrtcUrl": f"ws://{SERVER_IP}:3333/app/{stream_id}",
+        "llhlsUrl": f"http://{SERVER_IP}:3333/app/{stream_id}/llhls.m3u8",
+        "hlsUrl": f"http://{SERVER_IP}:3333/app/{stream_id}/llhls.m3u8",
+    }
+
+
+def discover_ome_streams() -> list[dict]:
+    now = time.monotonic()
+
+    with _DISCOVERY_LOCK:
+        if now - _DISCOVERY_CACHE["updated_at"] < DISCOVERY_CACHE_TTL:
+            return list(_DISCOVERY_CACHE["streams"])
+
+    online_streams = []
+
+    with ThreadPoolExecutor(max_workers=DISCOVERY_WORKERS) as executor:
+        future_map = {
+            executor.submit(is_ome_stream_online, stream_id): (index, stream_id)
+            for index, stream_id in enumerate(CANDIDATE_STREAM_IDS, start=1)
+        }
+
+        for future in as_completed(future_map):
+            index, stream_id = future_map[future]
+            try:
+                if future.result():
+                    online_streams.append(stream_payload(stream_id, index))
+            except Exception:
+                continue
+
+    online_streams.sort(key=lambda item: item["id"])
+
+    with _DISCOVERY_LOCK:
+        _DISCOVERY_CACHE["updated_at"] = time.monotonic()
+        _DISCOVERY_CACHE["streams"] = online_streams
+
+    return online_streams
 
 
 @app.on_event("startup")
@@ -90,7 +170,7 @@ def init_db():
     if not cur.fetchone():
         cur.execute(
             "INSERT INTO users (login, password_hash, is_admin) VALUES (%s, %s, %s)",
-            ("admin", bcrypt.hash("admin123"), True)
+            ("admin", bcrypt.hash(os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")), True)
         )
 
     cur.execute("SELECT id FROM departments LIMIT 1;")
@@ -98,6 +178,7 @@ def init_db():
         cur.execute("INSERT INTO departments (name) VALUES (%s);", ("Отдел 1",))
         cur.execute("INSERT INTO departments (name) VALUES (%s);", ("Отдел 2",))
         cur.execute("INSERT INTO departments (name) VALUES (%s);", ("Отдел 3",))
+        cur.execute("INSERT INTO departments (name) VALUES (%s);", ("Отдел 4",))
 
         cur.execute(
             "INSERT INTO streams (department_id, name, url) VALUES (%s, %s, %s);",
@@ -123,30 +204,7 @@ def init_db():
 
 @app.get("/streams")
 def streams_api():
-    streams = []
-
-    for index, stream_id in enumerate(STREAM_IDS, start=1):
-        if not is_ome_stream_online(stream_id):
-            continue
-
-        department_id, department_name = STREAM_DEPARTMENTS.get(
-            stream_id,
-            (f"department-{index}", f"Отдел {index}"),
-        )
-
-        streams.append({
-            "id": stream_id,
-            "name": stream_id,
-            "departmentId": department_id,
-            "departmentName": department_name,
-            "status": "online",
-            "latency": 1,
-            "webrtcUrl": f"ws://{SERVER_IP}:3333/app/{stream_id}",
-            "llhlsUrl": f"http://{SERVER_IP}:3333/app/{stream_id}/llhls.m3u8",
-            "hlsUrl": f"http://{SERVER_IP}:3333/app/{stream_id}/llhls.m3u8",
-        })
-
-    return {"streams": streams}
+    return {"streams": discover_ome_streams()}
 
 
 @app.get("/", response_class=HTMLResponse)
