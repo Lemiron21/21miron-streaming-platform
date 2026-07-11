@@ -4,11 +4,23 @@ __pycache__/
 .venv/
 venv/
 .env
+*.env
+!.env.example
+
+# Local platform overrides and secrets
+*.local.json
+platform.local.json
+secrets/
 
 # Node
 node_modules/
 frontend/node_modules/
 frontend/dist/
+
+# Database and backups
+*.dump
+*.sql.gz
+backups/
 
 # Logs
 *.log
