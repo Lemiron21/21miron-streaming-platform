@@ -32,14 +32,13 @@ const currentUser = {
 
 function getOperatorProfile(stream, index) {
   const number = Number(String(stream.id).match(/\d+$/)?.[0] ?? index)
-  const drones = ['DJI Agras T50', 'DJI Agras T40', 'DJI Mavic 3 Enterprise', 'DJI Matrice 350 RTK']
-  const tasks = ['Полив поля', 'Осмотр посевов', 'Контроль маршрута', 'Подготовка задания']
+  const sources = ['DJI Agras T50', 'DJI Agras T40', 'DJI Mavic 3 Enterprise', 'DJI Matrice 350 RTK']
+  const statuses = ['Трансляция активна', 'Осмотр оборудования', 'Контроль маршрута', 'Подготовка к работе']
 
   return {
     operator: `Оператор ${number}`,
-    drone: drones[(number - 1) % drones.length],
-    field: `Поле №${number}`,
-    task: tasks[(number - 1) % tasks.length],
+    source: sources[(number - 1) % sources.length],
+    status: statuses[(number - 1) % statuses.length],
     battery: 72 + (number % 18),
     viewers: Math.max(1, number % 7),
   }
@@ -114,7 +113,7 @@ function App() {
           {userRole.canView && (
             <button className={`department-button ${viewMode === 'monitoring' ? 'active' : ''}`} onClick={() => setViewMode('monitoring')}>
               <span>▣</span>
-              Мониторинг работ
+              Мониторинг
             </button>
           )}
           {userRole.canBroadcast && (
@@ -135,7 +134,7 @@ function App() {
           <nav className="department-nav secondary-nav">
             {departments.map((department) => (
               <button key={department.id} className={`department-button ${activeDepartment === department.id ? 'active' : ''}`} onClick={() => setActiveDepartment(department.id)}>
-                <span>{department.id === 'all' ? '●' : '🌾'}</span>
+                <span>{department.id === 'all' ? '●' : '▦'}</span>
                 {department.name}
               </button>
             ))}
@@ -196,7 +195,7 @@ function MonitoringDashboard({ streams, visibleStreams, isLoading, apiError, gri
         <header className="topbar">
           <div>
             <h1>{activeDepartmentName}</h1>
-            <p>Мониторинг транслирующих операторов, дронов, полей и текущих сельхозработ.</p>
+            <p>Мониторинг транслирующих операторов, дронов, камер и состояния текущих работ.</p>
           </div>
           <div className="topbar-card">
             <span className={apiError ? 'pulse error' : 'connection-dot'} />
@@ -230,7 +229,7 @@ function MonitoringDashboard({ streams, visibleStreams, isLoading, apiError, gri
                   <div className="stream-card-header">
                     <div>
                       <h3>🚁 {profile.operator}</h3>
-                      <span>{profile.drone} · {profile.field}</span>
+                      <span>{profile.source}</span>
                     </div>
                     <input type="checkbox" checked={selected} onChange={() => toggleStream(stream.id)} aria-label={`Выбрать ${profile.operator}`} />
                   </div>
@@ -238,14 +237,14 @@ function MonitoringDashboard({ streams, visibleStreams, isLoading, apiError, gri
                   <div className="video-placeholder" data-stream-video={stream.id}>
                     <WebRtcPlayer streamId={stream.id} title={profile.operator} />
                     <div className="live-badge">● LIVE</div>
-                    <div className="latency-badge">{profile.task}</div>
+                    <div className="latency-badge">{profile.status}</div>
                   </div>
 
                   <div className="stream-meta-grid">
                     <span>🔋 {profile.battery}%</span>
-                    <span>🌾 {profile.field}</span>
                     <span>👁 {profile.viewers}</span>
                     <span>📡 {stream.id}</span>
+                    <span>HD</span>
                   </div>
 
                   <div className="stream-actions">
@@ -269,9 +268,9 @@ function MonitoringDashboard({ streams, visibleStreams, isLoading, apiError, gri
         </section>
 
         <section className="metrics-card">
-          <h2>Оперативная сводка по дронам и просмотрам</h2>
-          <Metric label="Транслирующие" value={`${streams.length}`} hint="операторы в поле" />
-          <Metric label="Просматривающие" value={`${totalViewers}`} hint="диспетчеры, агрономы, руководство" />
+          <h2>Оперативная сводка</h2>
+          <Metric label="Транслирующие" value={`${streams.length}`} hint="активные источники" />
+          <Metric label="Просматривающие" value={`${totalViewers}`} hint="активные пользователи" />
           <Metric label="Сервер" value={serverStatus} hint="FastAPI · OvenMediaEngine" />
         </section>
       </aside>
@@ -298,7 +297,7 @@ function BroadcastPanel({ userRole }) {
       <header className="topbar">
         <div>
           <h1>Начать трансляцию</h1>
-          <p>Этот раздел предназначен только для группы FreeIPA <b>video-operator</b>. Оператор не получает доступ к просмотру чужих трансляций.</p>
+          <p>Раздел доступен группе FreeIPA <b>video-operator</b>. Оператор может только запускать собственную трансляцию.</p>
         </div>
         <div className="topbar-card">Роль: <b>{userRole.label}</b></div>
       </header>
@@ -306,18 +305,17 @@ function BroadcastPanel({ userRole }) {
       <section className="admin-grid">
         <div className="admin-wide-card broadcast-card">
           <h2>Трансляция через сайт</h2>
-          <p>Сейчас добавлен первый этап: выбор захвата экрана или окна. После этого подключим публикацию в OvenMediaEngine через WebRTC/WHIP или отдельный backend-publisher.</p>
+          <p>Выберите экран или окно. После проверки интерфейса подключим прямую публикацию браузерного потока в OvenMediaEngine.</p>
           <div className="admin-actions">
             <button onClick={startPreview}>Выбрать экран или окно</button>
-            <button onClick={() => navigator.clipboard?.writeText('video-operator')}>Скопировать группу FreeIPA</button>
           </div>
           <div className="broadcast-preview">
             {previewStream ? <VideoPreview stream={previewStream} /> : <div className="player-state">{captureStatus}</div>}
           </div>
         </div>
-        <AdminCard title="Права оператора" status="video-operator" text="Оператор видит только вкладку начала трансляции и не имеет доступа к просмотру." />
-        <AdminCard title="Источник" status="Screen Capture" text="Оператор выбирает захват экрана или конкретного окна прямо в браузере." />
-        <AdminCard title="Следующий этап" status="WHIP/WebRTC" text="Нужно подключить публикацию браузерного потока в OvenMediaEngine." />
+        <AdminCard title="Права оператора" status="video-operator" text="Только запуск собственной трансляции, без доступа к просмотру." />
+        <AdminCard title="Источник" status="Screen Capture" text="Захват экрана или выбранного окна непосредственно в браузере." />
+        <AdminCard title="Публикация" status="WHIP/WebRTC" text="Следующим этапом подключим передачу потока в OvenMediaEngine." />
       </section>
     </main>
   )
@@ -333,7 +331,7 @@ function AdminPanel({ activeSection, setActiveSection, streams, apiError, setVie
       <header className="topbar admin-topbar">
         <div>
           <h1>Администрирование</h1>
-          <p>Пользователи и права назначаются во FreeIPA. Интерфейс только применяет группы и показывает нужные разделы.</p>
+          <p>Пользователи и права назначаются во FreeIPA. Интерфейс применяет группы и показывает разрешённые разделы.</p>
         </div>
         <div className="topbar-card"><span className={apiError ? 'pulse error' : 'connection-dot'} />Backend: <b>{apiError ? 'ошибка' : 'online'}</b></div>
       </header>
@@ -356,8 +354,8 @@ function AdminPanel({ activeSection, setActiveSection, streams, apiError, setVie
 function AdminOverview({ streams, setViewMode }) {
   return (
     <section className="admin-grid">
-      <AdminCard title="Транслирующие" status={`${streams.length} online`} text="Операторы, дроны и экранные трансляции в поле." />
-      <AdminCard title="Просматривающие" status="роль viewer" text="Диспетчеры, агрономы и руководство с правом просмотра." />
+      <AdminCard title="Транслирующие" status={`${streams.length} online`} text="Активные операторы, дроны, камеры и экранные трансляции." />
+      <AdminCard title="Просматривающие" status="роль viewer" text="Пользователи с правом просмотра активных трансляций." />
       <AdminCard title="FreeIPA" status="source of truth" text="Группы video-admins, video-operator и video-viewer управляют доступом." />
       <AdminCard title="Сайт-трансляция" status="этап 1" text="Добавлен интерфейс выбора окна или экрана для оператора." />
       <div className="admin-wide-card">
@@ -379,14 +377,14 @@ function AdminAccess() {
         <h2>Модель доступа через FreeIPA</h2>
         <p>Локально пользователей не создаём. FreeIPA назначает группу, а приложение показывает только разрешённые разделы.</p>
         <div className="role-table">
-          <RoleRow group="video-admins" rights="Администратор: мониторинг, администрирование, интеграции, просмотр, запуск тестовой трансляции." />
+          <RoleRow group="video-admins" rights="Администратор: мониторинг, администрирование, интеграции, просмотр и тестовая трансляция." />
           <RoleRow group="video-operator" rights="Транслирующий: только вкладка Начать трансляцию. Просмотр чужих потоков запрещён." />
           <RoleRow group="video-viewer" rights="Просматривающий: только мониторинг и просмотр разрешённых трансляций." />
         </div>
       </div>
-      <AdminCard title="Администраторы" status="video-admins" text="Настройки платформы, связка с FreeIPA, потоки, интеграции." />
+      <AdminCard title="Администраторы" status="video-admins" text="Настройки платформы, связка с FreeIPA, потоки и интеграции." />
       <AdminCard title="Транслирующие" status="video-operator" text="Запуск OBS или браузерной трансляции без доступа к просмотру." />
-      <AdminCard title="Просматривающие" status="video-viewer" text="Просмотр трансляций дронов и состояния работ." />
+      <AdminCard title="Просматривающие" status="video-viewer" text="Просмотр разрешённых трансляций и состояния источников." />
     </section>
   )
 }
@@ -396,13 +394,13 @@ function AdminTransmitters({ streams }) {
     <section className="admin-grid">
       <div className="admin-wide-card">
         <h2>Транслирующие онлайн</h2>
-        <p>Это операторы или дроны, которые сейчас публикуют поток в OvenMediaEngine.</p>
+        <p>Операторы и источники, которые сейчас публикуют поток в OvenMediaEngine.</p>
         <div className="stream-admin-list">
           {streams.length === 0 ? <div className="muted">Сейчас активных транслирующих нет.</div> : streams.map((stream, index) => {
             const profile = getOperatorProfile(stream, index + 1)
             return (
               <div className="stream-admin-row" key={stream.id}>
-                <div><strong>{profile.operator}</strong><small>{profile.drone} · {profile.field} · {profile.task}</small></div>
+                <div><strong>{profile.operator}</strong><small>{profile.source} · {profile.status}</small></div>
                 <span>{stream.id}</span>
                 <button onClick={() => navigator.clipboard?.writeText(stream.webrtcUrl)}>Копировать WebRTC</button>
               </div>
@@ -411,8 +409,8 @@ function AdminTransmitters({ streams }) {
         </div>
       </div>
       <AdminCard title="OBS" status="работает" text="rtmp://10.77.77.1:1935/app, ключ testN." />
-      <AdminCard title="Через сайт" status="следующий этап" text="Браузерный захват экрана/окна с публикацией в OME." />
-      <AdminCard title="Поля" status="planned" text="Свяжем поток с полем, дроном и заданием полива." />
+      <AdminCard title="Через сайт" status="следующий этап" text="Браузерный захват экрана или окна с публикацией в OME." />
+      <AdminCard title="Автообнаружение" status="active" text="Новые активные потоки автоматически появляются в мониторинге." />
     </section>
   )
 }
@@ -421,10 +419,10 @@ function AdminViewers({ streams }) {
   const totalViewers = streams.reduce((sum, stream, index) => sum + getOperatorProfile(stream, index + 1).viewers, 0)
   return (
     <section className="admin-grid">
-      <AdminCard title="Просматривающие" status={`${totalViewers} active`} text="Пока расчет демонстрационный. После FreeIPA и WebSocket будем считать реальные сессии." />
+      <AdminCard title="Просматривающие" status={`${totalViewers} active`} text="Пока расчёт демонстрационный. После FreeIPA и WebSocket будем считать реальные сессии." />
       <AdminCard title="Роль" status="video-viewer" text="Пользователь может только смотреть разрешённые трансляции." />
       <AdminCard title="Операторы" status="no view" text="video-operator не получает доступ к странице мониторинга." />
-      <div className="admin-wide-card"><h2>Будущая модель просмотра</h2><p>Backend будет хранить, кто смотрит какой поток: диспетчер, агроном, инженер или руководитель. Эти данные отдадим в интерфейс через WebSocket.</p></div>
+      <div className="admin-wide-card"><h2>Будущая модель просмотра</h2><p>Backend будет хранить, кто смотрит какой поток. Эти данные передадим в интерфейс через WebSocket.</p></div>
     </section>
   )
 }
@@ -434,7 +432,7 @@ function AdminIntegrations() {
     <section className="admin-grid">
       <AdminCard title="FreeIPA" status="next" text="Подключить группы video-admins, video-operator, video-viewer." />
       <AdminCard title="WebSocket" status="next" text="Заменить polling на живые события: появился поток, пропал поток, подключился зритель." />
-      <AdminCard title="OvenMediaEngine" status="active" text="RTMP ingest, WebRTC playback, будущая browser publishing интеграция." />
+      <AdminCard title="OvenMediaEngine" status="active" text="RTMP ingest, WebRTC playback и будущая browser publishing интеграция." />
       <AdminCard title="Grafana/Zabbix" status="planned" text="Мониторинг нагрузки, потоков, зрителей и ошибок." />
     </section>
   )
@@ -468,7 +466,7 @@ function EmptyBroadcastState({ error }) {
     <section className="empty-broadcast">
       <div className="empty-icon">🚁</div>
       <h2>Сейчас нет активных трансляций</h2>
-      <p>{error ? `Ошибка API: ${error}` : 'Когда оператор или дрон начнёт трансляцию, карточка автоматически появится в мониторинге.'}</p>
+      <p>{error ? `Ошибка API: ${error}` : 'Когда оператор или источник начнёт трансляцию, карточка автоматически появится в мониторинге.'}</p>
       <div className="empty-details"><span>OBS ingest</span><b>10.77.77.1:1935/app · testN</b></div>
     </section>
   )
