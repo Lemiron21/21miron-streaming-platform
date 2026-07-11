@@ -1,7 +1,8 @@
+import json
 import os
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from threading import Lock
 from urllib.error import URLError
 from urllib.request import Request as UrlRequest, urlopen
@@ -14,8 +15,33 @@ from fastapi.templating import Jinja2Templates
 from passlib.hash import bcrypt
 
 
-app = FastAPI()
-templates = Jinja2Templates(directory="/opt/video-platform/templates")
+BASE_DIR = Path(__file__).resolve().parent
+PLATFORM_CONFIG_PATH = Path(
+    os.getenv(
+        "PLATFORM_CONFIG_PATH",
+        str(BASE_DIR / "frontend/src/config/platform.json"),
+    )
+)
+
+
+def load_platform_config() -> dict:
+    try:
+        with PLATFORM_CONFIG_PATH.open("r", encoding="utf-8") as config_file:
+            return json.load(config_file)
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            f"Cannot load platform configuration from {PLATFORM_CONFIG_PATH}: {error}"
+        ) from error
+
+
+PLATFORM_CONFIG = load_platform_config()
+SERVER_CONFIG = PLATFORM_CONFIG.get("server", {})
+OME_CONFIG = PLATFORM_CONFIG.get("ovenMediaEngine", {})
+DISCOVERY_CONFIG = PLATFORM_CONFIG.get("streamDiscovery", {})
+DEFAULTS_CONFIG = PLATFORM_CONFIG.get("defaults", {})
+
+app = FastAPI(title=PLATFORM_CONFIG.get("platformName", "21miron"))
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 DB = {
     "dbname": os.getenv("DB_NAME", "video_platform"),
@@ -25,26 +51,63 @@ DB = {
     "port": int(os.getenv("DB_PORT", "5432")),
 }
 
-SERVER_IP = os.getenv("VIDEO_SERVER_IP", "10.77.77.1")
-OME_HTTP_URL = os.getenv("OME_HTTP_URL", "http://127.0.0.1:3333")
+PUBLIC_HOST = os.getenv(
+    "VIDEO_SERVER_IP",
+    str(SERVER_CONFIG.get("publicHost", "127.0.0.1")),
+)
+WEBRTC_SCHEME = str(SERVER_CONFIG.get("webrtcScheme", "ws"))
+WEBRTC_PORT = int(SERVER_CONFIG.get("webrtcPort", 3333))
+RTMP_PORT = int(SERVER_CONFIG.get("rtmpPort", 1935))
+OME_APPLICATION = str(OME_CONFIG.get("application", "app"))
+OME_HTTP_URL = os.getenv(
+    "OME_HTTP_URL",
+    str(OME_CONFIG.get("internalBaseUrl", "http://127.0.0.1:3333")),
+).rstrip("/")
 
-DISCOVERY_PREFIX = os.getenv("STREAM_DISCOVERY_PREFIX", "test")
-DISCOVERY_START = int(os.getenv("STREAM_DISCOVERY_START", "1"))
-DISCOVERY_END = int(os.getenv("STREAM_DISCOVERY_END", "200"))
-DISCOVERY_TIMEOUT = float(os.getenv("STREAM_DISCOVERY_TIMEOUT", "0.35"))
-DISCOVERY_WORKERS = int(os.getenv("STREAM_DISCOVERY_WORKERS", "32"))
-DISCOVERY_CACHE_TTL = float(os.getenv("STREAM_DISCOVERY_CACHE_TTL", "2"))
-STREAM_DEPARTMENT_SIZE = int(os.getenv("STREAM_DEPARTMENT_SIZE", "50"))
+DISCOVERY_PREFIX = os.getenv(
+    "STREAM_DISCOVERY_PREFIX",
+    str(DISCOVERY_CONFIG.get("prefix", "test")),
+)
+DISCOVERY_START = int(
+    os.getenv("STREAM_DISCOVERY_START", str(DISCOVERY_CONFIG.get("start", 1)))
+)
+DISCOVERY_END = int(
+    os.getenv("STREAM_DISCOVERY_END", str(DISCOVERY_CONFIG.get("end", 200)))
+)
+DISCOVERY_TIMEOUT = float(
+    os.getenv(
+        "STREAM_DISCOVERY_TIMEOUT",
+        str(DISCOVERY_CONFIG.get("timeoutSeconds", 0.35)),
+    )
+)
+DISCOVERY_WORKERS = int(
+    os.getenv("STREAM_DISCOVERY_WORKERS", str(DISCOVERY_CONFIG.get("workers", 32)))
+)
+DISCOVERY_CACHE_TTL = float(
+    os.getenv(
+        "STREAM_DISCOVERY_CACHE_TTL",
+        str(DISCOVERY_CONFIG.get("cacheTtlSeconds", 2)),
+    )
+)
 
-EXPLICIT_STREAM_IDS = [item.strip() for item in os.getenv("STREAM_IDS", "").split(",") if item.strip()]
-AUTO_STREAM_IDS = [f"{DISCOVERY_PREFIX}{index}" for index in range(DISCOVERY_START, DISCOVERY_END + 1)]
+EXPLICIT_STREAM_IDS = [
+    item.strip() for item in os.getenv("STREAM_IDS", "").split(",") if item.strip()
+]
+AUTO_STREAM_IDS = [
+    f"{DISCOVERY_PREFIX}{index}"
+    for index in range(DISCOVERY_START, DISCOVERY_END + 1)
+]
 CANDIDATE_STREAM_IDS = EXPLICIT_STREAM_IDS or AUTO_STREAM_IDS
 
-STREAM_DEPARTMENTS = {
-    "test1": ("department-1", "Отдел 1"),
-    "test2": ("department-1", "Отдел 1"),
-    "test3": ("department-1", "Отдел 1"),
+DEPARTMENTS = {
+    item["id"]: item["name"]
+    for item in PLATFORM_CONFIG.get("departments", [])
+    if item.get("id") and item.get("id") != "all"
 }
+STREAM_ASSIGNMENTS = PLATFORM_CONFIG.get("streamAssignments", {})
+DEFAULT_DEPARTMENT_ID = str(
+    DEFAULTS_CONFIG.get("departmentId", next(iter(DEPARTMENTS), "department-1"))
+)
 
 _DISCOVERY_CACHE = {"updated_at": 0.0, "streams": []}
 _DISCOVERY_LOCK = Lock()
@@ -61,7 +124,7 @@ def db():
 
 
 def ome_llhls_url(stream_id: str) -> str:
-    return f"{OME_HTTP_URL}/app/{stream_id}/llhls.m3u8"
+    return f"{OME_HTTP_URL}/{OME_APPLICATION}/{stream_id}/llhls.m3u8"
 
 
 def is_ome_stream_online(stream_id: str) -> bool:
@@ -77,18 +140,14 @@ def is_ome_stream_online(stream_id: str) -> bool:
         return False
 
 
-def department_for_stream(stream_id: str, fallback_index: int) -> tuple[str, str]:
-    if stream_id in STREAM_DEPARTMENTS:
-        return STREAM_DEPARTMENTS[stream_id]
-
-    match = re.search(r"(\d+)$", stream_id)
-    stream_number = int(match.group(1)) if match else fallback_index
-    department_number = max(1, ((stream_number - 1) // STREAM_DEPARTMENT_SIZE) + 1)
-    return f"department-{department_number}", f"Отдел {department_number}"
+def department_for_stream(stream_id: str) -> tuple[str, str]:
+    department_id = str(STREAM_ASSIGNMENTS.get(stream_id, DEFAULT_DEPARTMENT_ID))
+    department_name = DEPARTMENTS.get(department_id, department_id)
+    return department_id, department_name
 
 
-def stream_payload(stream_id: str, index: int) -> dict:
-    department_id, department_name = department_for_stream(stream_id, index)
+def stream_payload(stream_id: str) -> dict:
+    department_id, department_name = department_for_stream(stream_id)
     return {
         "id": stream_id,
         "name": stream_id,
@@ -96,9 +155,18 @@ def stream_payload(stream_id: str, index: int) -> dict:
         "departmentName": department_name,
         "status": "online",
         "latency": 1,
-        "webrtcUrl": f"ws://{SERVER_IP}:3333/app/{stream_id}",
-        "llhlsUrl": f"http://{SERVER_IP}:3333/app/{stream_id}/llhls.m3u8",
-        "hlsUrl": f"http://{SERVER_IP}:3333/app/{stream_id}/llhls.m3u8",
+        "webrtcUrl": (
+            f"{WEBRTC_SCHEME}://{PUBLIC_HOST}:{WEBRTC_PORT}/"
+            f"{OME_APPLICATION}/{stream_id}"
+        ),
+        "llhlsUrl": (
+            f"http://{PUBLIC_HOST}:{WEBRTC_PORT}/"
+            f"{OME_APPLICATION}/{stream_id}/llhls.m3u8"
+        ),
+        "hlsUrl": (
+            f"http://{PUBLIC_HOST}:{WEBRTC_PORT}/"
+            f"{OME_APPLICATION}/{stream_id}/llhls.m3u8"
+        ),
     }
 
 
@@ -111,14 +179,14 @@ def discover_ome_streams() -> list[dict]:
     online_streams = []
     with ThreadPoolExecutor(max_workers=DISCOVERY_WORKERS) as executor:
         future_map = {
-            executor.submit(is_ome_stream_online, stream_id): (index, stream_id)
-            for index, stream_id in enumerate(CANDIDATE_STREAM_IDS, start=1)
+            executor.submit(is_ome_stream_online, stream_id): stream_id
+            for stream_id in CANDIDATE_STREAM_IDS
         }
         for future in as_completed(future_map):
-            index, stream_id = future_map[future]
+            stream_id = future_map[future]
             try:
                 if future.result():
-                    online_streams.append(stream_payload(stream_id, index))
+                    online_streams.append(stream_payload(stream_id))
             except Exception:
                 continue
 
@@ -150,8 +218,14 @@ def collect_system_metrics() -> dict:
 
     with _METRICS_LOCK:
         elapsed = max(now - _METRICS_NETWORK_SAMPLE["timestamp"], 0.001)
-        upload_bps = max(0.0, (network.bytes_sent - _METRICS_NETWORK_SAMPLE["sent"]) / elapsed)
-        download_bps = max(0.0, (network.bytes_recv - _METRICS_NETWORK_SAMPLE["received"]) / elapsed)
+        upload_bps = max(
+            0.0,
+            (network.bytes_sent - _METRICS_NETWORK_SAMPLE["sent"]) / elapsed,
+        )
+        download_bps = max(
+            0.0,
+            (network.bytes_recv - _METRICS_NETWORK_SAMPLE["received"]) / elapsed,
+        )
         _METRICS_NETWORK_SAMPLE.update(
             timestamp=now,
             sent=network.bytes_sent,
@@ -180,40 +254,57 @@ def collect_system_metrics() -> dict:
 def init_db():
     conn = db()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
             login TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
             is_admin BOOLEAN DEFAULT FALSE
         );
-    """)
-    cur.execute("""
+        """
+    )
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS departments (
             id SERIAL PRIMARY KEY,
+            external_id TEXT UNIQUE,
             name TEXT NOT NULL
         );
-    """)
-    cur.execute("""
+        """
+    )
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS streams (
             id SERIAL PRIMARY KEY,
             department_id INTEGER REFERENCES departments(id),
             name TEXT NOT NULL,
             url TEXT NOT NULL
         );
-    """)
+        """
+    )
 
     cur.execute("SELECT id FROM users WHERE login=%s;", ("admin",))
     if not cur.fetchone():
         cur.execute(
             "INSERT INTO users (login, password_hash, is_admin) VALUES (%s, %s, %s)",
-            ("admin", bcrypt.hash(os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")), True),
+            (
+                "admin",
+                bcrypt.hash(os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")),
+                True,
+            ),
         )
 
-    cur.execute("SELECT id FROM departments LIMIT 1;")
-    if not cur.fetchone():
-        for department_name in ("Отдел 1", "Отдел 2", "Отдел 3", "Отдел 4"):
-            cur.execute("INSERT INTO departments (name) VALUES (%s);", (department_name,))
+    for department_id, department_name in DEPARTMENTS.items():
+        cur.execute(
+            """
+            INSERT INTO departments (external_id, name)
+            VALUES (%s, %s)
+            ON CONFLICT (external_id)
+            DO UPDATE SET name = EXCLUDED.name;
+            """,
+            (department_id, department_name),
+        )
 
     conn.commit()
     cur.close()
@@ -225,6 +316,20 @@ def streams_api():
     return {"streams": discover_ome_streams()}
 
 
+@app.get("/config")
+def config_api():
+    return {
+        "platformName": PLATFORM_CONFIG.get("platformName", "21miron"),
+        "departments": PLATFORM_CONFIG.get("departments", []),
+        "freeipa": PLATFORM_CONFIG.get("freeipa", {}),
+        "server": {
+            "publicHost": PUBLIC_HOST,
+            "rtmpPort": RTMP_PORT,
+            "webrtcPort": WEBRTC_PORT,
+        },
+    }
+
+
 @app.get("/system/metrics")
 def system_metrics_api():
     return collect_system_metrics()
@@ -232,7 +337,10 @@ def system_metrics_api():
 
 @app.get("/", response_class=HTMLResponse)
 def login_page(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request, "title": "Сервер трансляций: 21miron"})
+    return templates.TemplateResponse(
+        "login.html",
+        {"request": request, "title": "Сервер трансляций: 21miron"},
+    )
 
 
 @app.post("/login")
@@ -258,7 +366,12 @@ def dashboard(request: Request):
         return RedirectResponse("/")
     return templates.TemplateResponse(
         "dashboard.html",
-        {"request": request, "title": "Сервер трансляций: 21miron", "user": user, "server_ip": SERVER_IP},
+        {
+            "request": request,
+            "title": "Сервер трансляций: 21miron",
+            "user": user,
+            "server_ip": PUBLIC_HOST,
+        },
     )
 
 
