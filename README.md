@@ -5,10 +5,11 @@
 ## Целевая схема
 
 - Ubuntu Server 26.04 LTS без GUI;
+- Docker Engine + Docker Compose;
 - Nginx + React/Vite;
 - FastAPI/Uvicorn;
-- PostgreSQL;
-- OvenMediaEngine в Docker;
+- PostgreSQL 18;
+- OvenMediaEngine;
 - KVM/libvirt и FreeIPA в отдельной виртуальной машине;
 - MikroTik как сетевой Firewall, NAT и маршрутизатор;
 - VPN-серверы, Grafana, Zabbix, BookStack и другие сервисы остаются на VPS.
@@ -21,40 +22,57 @@ video-operator   только запуск собственной трансля
 video-viewer     только просмотр разрешённых трансляций
 ```
 
-## Главные документы
+## Основные документы
 
-- [`docs/INSTALL_UBUNTU_26_04.md`](docs/INSTALL_UBUNTU_26_04.md) — установка на новый физический сервер;
+- [`docs/DOCKER_COMPOSE_DEPLOYMENT.md`](docs/DOCKER_COMPOSE_DEPLOYMENT.md) — поддерживаемое промышленное развёртывание;
+- [`docs/INSTALL_UBUNTU_26_04.md`](docs/INSTALL_UBUNTU_26_04.md) — подготовка Ubuntu Server 26.04;
 - [`DEPLOYMENT.md`](DEPLOYMENT.md) — миграция и ввод в эксплуатацию;
 - [`CONFIGURATION.md`](CONFIGURATION.md) — IP, отделы, пароли, базы данных и пути файлов;
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — хост, VM FreeIPA, MikroTik и VPS;
 - [`.env.example`](.env.example) — шаблон секретных переменных;
-- [`frontend/src/config/platform.json`](frontend/src/config/platform.json) — единый несекретный файл настроек.
+- [`frontend/src/config/platform.json`](frontend/src/config/platform.json) — несекретные настройки интерфейса.
 
-## Автоматизация
+## Первичный запуск на физическом сервере
 
-Первичная установка после клонирования репозитория в `/opt/video-platform`:
+Репозиторий размещается в:
 
-```bash
-sudo bash scripts/install-ubuntu-26.04.sh
+```text
+/opt/21miron/repository
 ```
 
-Обновление:
+Команды:
 
 ```bash
-sudo bash scripts/update.sh
+cd /opt/21miron/repository
+git pull --ff-only
+cp .env.example .env
+chmod 600 .env
+nano .env
+chmod +x scripts/compose-*.sh
+./scripts/compose-install.sh
 ```
 
-Проверка компонентов:
+Проверка:
 
 ```bash
-sudo bash scripts/healthcheck.sh
+./scripts/compose-healthcheck.sh
+docker compose ps
 ```
 
-Резервное копирование PostgreSQL:
+## Обновление
 
 ```bash
-sudo bash scripts/backup-postgresql.sh
+cd /opt/21miron/repository
+./scripts/compose-update.sh
 ```
+
+## Резервная копия PostgreSQL
+
+```bash
+./scripts/compose-backup-database.sh
+```
+
+Файлы создаются в `/opt/21miron/repository/backups/` и должны дополнительно копироваться на внешний сервер или отдельное хранилище.
 
 ## Основные функции
 
@@ -77,14 +95,14 @@ npm run dev
 
 ## Секреты
 
-Реальные пароли и LDAP-реквизиты хранятся только в:
+Реальные пароли и LDAP-реквизиты хранятся только в локальном файле:
 
 ```text
-/etc/21miron/video-platform.env
+/opt/21miron/repository/.env
 ```
 
-Они не должны добавляться в GitHub.
+Файл `.env` исключён из Git и не должен добавляться в GitHub.
 
 ## Текущие ограничения
 
-LDAP-аутентификация FreeIPA, обнаружение потоков через OME API, WebSocket-события и публикация потока из браузера ещё требуют отдельной реализации и приёмочного тестирования перед промышленным запуском. Текущая версия сохраняет рабочую схему OBS → OvenMediaEngine → WebRTC/LL-HLS → сайт.
+LDAP-аутентификация FreeIPA, обнаружение потоков через OME API Manager, WebSocket-события и публикация потока из браузера ещё требуют отдельной реализации и приёмочного тестирования. Текущая рабочая схема: OBS → OvenMediaEngine → WebRTC/LL-HLS → сайт.
