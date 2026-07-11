@@ -8,15 +8,12 @@ from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from passlib.hash import bcrypt
 import psycopg2
 
 
 app = FastAPI()
-
-app.mount("/static", StaticFiles(directory="/opt/video-platform/static"), name="static")
 templates = Jinja2Templates(directory="/opt/video-platform/templates")
 
 
