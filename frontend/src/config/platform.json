@@ -1,0 +1,57 @@
+{
+  "platformName": "21miron",
+  "server": {
+    "publicHost": "192.168.1.50",
+    "webScheme": "http",
+    "webPort": 80,
+    "rtmpPort": 1935,
+    "webrtcScheme": "ws",
+    "webrtcPort": 3333
+  },
+  "ovenMediaEngine": {
+    "internalBaseUrl": "http://127.0.0.1:3333",
+    "application": "app",
+    "candidateUdpRange": "10000-10004",
+    "tcpRelayPort": 3478
+  },
+  "streamDiscovery": {
+    "prefix": "test",
+    "start": 1,
+    "end": 200,
+    "timeoutSeconds": 0.35,
+    "workers": 32,
+    "cacheTtlSeconds": 2
+  },
+  "departments": [
+    {
+      "id": "all",
+      "name": "Все трансляции"
+    },
+    {
+      "id": "department-1",
+      "name": "Отдел 1"
+    },
+    {
+      "id": "department-2",
+      "name": "Отдел 2"
+    },
+    {
+      "id": "department-3",
+      "name": "Отдел 3"
+    }
+  ],
+  "streamAssignments": {
+    "test1": "department-1",
+    "test2": "department-1",
+    "test3": "department-2"
+  },
+  "defaults": {
+    "departmentId": "department-1",
+    "maxStreams": 200
+  },
+  "freeipa": {
+    "adminGroup": "video-admins",
+    "operatorGroup": "video-operator",
+    "viewerGroup": "video-viewer"
+  }
+}
