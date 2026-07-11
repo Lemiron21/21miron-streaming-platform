@@ -6,16 +6,16 @@ from threading import Lock
 from urllib.error import URLError
 from urllib.request import Request as UrlRequest, urlopen
 
-from fastapi import FastAPI, Request, Form
+import psutil
+import psycopg2
+from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from passlib.hash import bcrypt
-import psycopg2
 
 
 app = FastAPI()
 templates = Jinja2Templates(directory="/opt/video-platform/templates")
-
 
 DB = {
     "dbname": os.getenv("DB_NAME", "video_platform"),
@@ -46,11 +46,14 @@ STREAM_DEPARTMENTS = {
     "test3": ("department-1", "Отдел 1"),
 }
 
-_DISCOVERY_CACHE = {
-    "updated_at": 0.0,
-    "streams": [],
-}
+_DISCOVERY_CACHE = {"updated_at": 0.0, "streams": []}
 _DISCOVERY_LOCK = Lock()
+_METRICS_LOCK = Lock()
+_METRICS_NETWORK_SAMPLE = {
+    "timestamp": time.monotonic(),
+    "sent": psutil.net_io_counters().bytes_sent,
+    "received": psutil.net_io_counters().bytes_recv,
+}
 
 
 def db():
@@ -67,7 +70,6 @@ def is_ome_stream_online(stream_id: str) -> bool:
         headers={"User-Agent": "21miron-video-platform/1.0"},
         method="GET",
     )
-
     try:
         with urlopen(request, timeout=DISCOVERY_TIMEOUT) as response:
             return 200 <= response.status < 300
@@ -87,7 +89,6 @@ def department_for_stream(stream_id: str, fallback_index: int) -> tuple[str, str
 
 def stream_payload(stream_id: str, index: int) -> dict:
     department_id, department_name = department_for_stream(stream_id, index)
-
     return {
         "id": stream_id,
         "name": stream_id,
@@ -103,19 +104,16 @@ def stream_payload(stream_id: str, index: int) -> dict:
 
 def discover_ome_streams() -> list[dict]:
     now = time.monotonic()
-
     with _DISCOVERY_LOCK:
         if now - _DISCOVERY_CACHE["updated_at"] < DISCOVERY_CACHE_TTL:
             return list(_DISCOVERY_CACHE["streams"])
 
     online_streams = []
-
     with ThreadPoolExecutor(max_workers=DISCOVERY_WORKERS) as executor:
         future_map = {
             executor.submit(is_ome_stream_online, stream_id): (index, stream_id)
             for index, stream_id in enumerate(CANDIDATE_STREAM_IDS, start=1)
         }
-
         for future in as_completed(future_map):
             index, stream_id = future_map[future]
             try:
@@ -125,74 +123,97 @@ def discover_ome_streams() -> list[dict]:
                 continue
 
     online_streams.sort(key=lambda item: item["id"])
-
     with _DISCOVERY_LOCK:
         _DISCOVERY_CACHE["updated_at"] = time.monotonic()
         _DISCOVERY_CACHE["streams"] = online_streams
-
     return online_streams
+
+
+def cpu_temperature() -> float | None:
+    try:
+        temperatures = psutil.sensors_temperatures()
+    except (AttributeError, OSError):
+        return None
+
+    for entries in temperatures.values():
+        for entry in entries:
+            if entry.current is not None:
+                return round(float(entry.current), 1)
+    return None
+
+
+def collect_system_metrics() -> dict:
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage("/")
+    network = psutil.net_io_counters()
+    now = time.monotonic()
+
+    with _METRICS_LOCK:
+        elapsed = max(now - _METRICS_NETWORK_SAMPLE["timestamp"], 0.001)
+        upload_bps = max(0.0, (network.bytes_sent - _METRICS_NETWORK_SAMPLE["sent"]) / elapsed)
+        download_bps = max(0.0, (network.bytes_recv - _METRICS_NETWORK_SAMPLE["received"]) / elapsed)
+        _METRICS_NETWORK_SAMPLE.update(
+            timestamp=now,
+            sent=network.bytes_sent,
+            received=network.bytes_recv,
+        )
+
+    load_average = os.getloadavg() if hasattr(os, "getloadavg") else (0.0, 0.0, 0.0)
+    return {
+        "cpuPercent": round(psutil.cpu_percent(interval=0.1), 1),
+        "cpuCores": psutil.cpu_count(logical=True) or 1,
+        "temperatureC": cpu_temperature(),
+        "memoryPercent": round(memory.percent, 1),
+        "memoryUsedBytes": memory.used,
+        "memoryTotalBytes": memory.total,
+        "diskPercent": round(disk.percent, 1),
+        "diskUsedBytes": disk.used,
+        "diskTotalBytes": disk.total,
+        "networkUploadBytesPerSecond": round(upload_bps),
+        "networkDownloadBytesPerSecond": round(download_bps),
+        "uptimeSeconds": max(0, round(time.time() - psutil.boot_time())),
+        "loadAverage": [round(value, 2) for value in load_average],
+    }
 
 
 @app.on_event("startup")
 def init_db():
     conn = db()
     cur = conn.cursor()
-
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        login TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        is_admin BOOLEAN DEFAULT FALSE
-    );
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            login TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            is_admin BOOLEAN DEFAULT FALSE
+        );
     """)
-
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS departments (
-        id SERIAL PRIMARY KEY,
-        name TEXT NOT NULL
-    );
+        CREATE TABLE IF NOT EXISTS departments (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL
+        );
     """)
-
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS streams (
-        id SERIAL PRIMARY KEY,
-        department_id INTEGER REFERENCES departments(id),
-        name TEXT NOT NULL,
-        url TEXT NOT NULL
-    );
+        CREATE TABLE IF NOT EXISTS streams (
+            id SERIAL PRIMARY KEY,
+            department_id INTEGER REFERENCES departments(id),
+            name TEXT NOT NULL,
+            url TEXT NOT NULL
+        );
     """)
 
     cur.execute("SELECT id FROM users WHERE login=%s;", ("admin",))
     if not cur.fetchone():
         cur.execute(
             "INSERT INTO users (login, password_hash, is_admin) VALUES (%s, %s, %s)",
-            ("admin", bcrypt.hash(os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")), True)
+            ("admin", bcrypt.hash(os.getenv("DEFAULT_ADMIN_PASSWORD", "admin123")), True),
         )
 
     cur.execute("SELECT id FROM departments LIMIT 1;")
     if not cur.fetchone():
-        cur.execute("INSERT INTO departments (name) VALUES (%s);", ("Отдел 1",))
-        cur.execute("INSERT INTO departments (name) VALUES (%s);", ("Отдел 2",))
-        cur.execute("INSERT INTO departments (name) VALUES (%s);", ("Отдел 3",))
-        cur.execute("INSERT INTO departments (name) VALUES (%s);", ("Отдел 4",))
-
-        cur.execute(
-            "INSERT INTO streams (department_id, name, url) VALUES (%s, %s, %s);",
-            (1, "Камера 1 - Вход", f"http://{SERVER_IP}:3333/app/test1/llhls.m3u8")
-        )
-        cur.execute(
-            "INSERT INTO streams (department_id, name, url) VALUES (%s, %s, %s);",
-            (1, "Камера 2 - Офис", f"http://{SERVER_IP}:3333/app/test2/llhls.m3u8")
-        )
-        cur.execute(
-            "INSERT INTO streams (department_id, name, url) VALUES (%s, %s, %s);",
-            (2, "Камера 3 - Коридор", f"http://{SERVER_IP}:3333/app/test3/llhls.m3u8")
-        )
-        cur.execute(
-            "INSERT INTO streams (department_id, name, url) VALUES (%s, %s, %s);",
-            (2, "Камера 4 - Склад", f"http://{SERVER_IP}:3333/app/test4/llhls.m3u8")
-        )
+        for department_name in ("Отдел 1", "Отдел 2", "Отдел 3", "Отдел 4"):
+            cur.execute("INSERT INTO departments (name) VALUES (%s);", (department_name,))
 
     conn.commit()
     cur.close()
@@ -204,15 +225,14 @@ def streams_api():
     return {"streams": discover_ome_streams()}
 
 
+@app.get("/system/metrics")
+def system_metrics_api():
+    return collect_system_metrics()
+
+
 @app.get("/", response_class=HTMLResponse)
 def login_page(request: Request):
-    return templates.TemplateResponse(
-        "login.html",
-        {
-            "request": request,
-            "title": "Сервер трансляций: 21miron",
-        }
-    )
+    return templates.TemplateResponse("login.html", {"request": request, "title": "Сервер трансляций: 21miron"})
 
 
 @app.post("/login")
@@ -226,14 +246,8 @@ def login(login: str = Form(...), password: str = Form(...)):
 
     if row and bcrypt.verify(password, row[0]):
         response = RedirectResponse("/dashboard", status_code=302)
-        response.set_cookie(
-            key="user",
-            value=login,
-            httponly=True,
-            samesite="lax"
-        )
+        response.set_cookie(key="user", value=login, httponly=True, samesite="lax")
         return response
-
     return RedirectResponse("/", status_code=302)
 
 
@@ -242,33 +256,9 @@ def dashboard(request: Request):
     user = request.cookies.get("user")
     if not user:
         return RedirectResponse("/")
-
-    conn = db()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT departments.name, streams.name, streams.url
-        FROM streams
-        JOIN departments ON streams.department_id = departments.id
-        ORDER BY departments.name, streams.name;
-    """)
-    streams = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    departments = {}
-    for department, name, url in streams:
-        departments[department] = departments.get(department, 0) + 1
-
     return templates.TemplateResponse(
         "dashboard.html",
-        {
-            "request": request,
-            "title": "Сервер трансляций: 21miron",
-            "user": user,
-            "streams": streams,
-            "departments": departments,
-            "server_ip": SERVER_IP,
-        }
+        {"request": request, "title": "Сервер трансляций: 21miron", "user": user, "server_ip": SERVER_IP},
     )
 
 
