@@ -2,93 +2,108 @@ import { useEffect, useMemo, useState } from 'react'
 import WebRtcPlayer from './components/WebRtcPlayer.jsx'
 import { departments, serverStats } from './data/mockData.js'
 
-const gridOptions = [
+const ROLE_CONFIG = {
+  admin: {
+    label: 'Администратор',
+    group: 'video-admins',
+    canView: true,
+    canBroadcast: true,
+    canAdmin: true,
+  },
+  operator: {
+    label: 'Транслирующий',
+    group: 'video-operator',
+    canView: false,
+    canBroadcast: true,
+    canAdmin: false,
+  },
+  viewer: {
+    label: 'Просматривающий',
+    group: 'video-viewer',
+    canView: true,
+    canBroadcast: false,
+    canAdmin: false,
+  },
+}
+
+const CURRENT_USER = {
+  login: serverStats.user,
+  role: 'admin',
+}
+
+const GRID_OPTIONS = [
   { id: 'grid-2', label: '2×2' },
   { id: 'grid-3', label: '3×3' },
   { id: 'grid-4', label: '4×4' },
-  { id: 'grid-5', label: '5×5' },
-  { id: 'grid-auto', label: 'Все' },
+  { id: 'grid-auto', label: 'Авто' },
 ]
 
-const adminSections = [
+const ADMIN_SECTIONS = [
   { id: 'overview', label: 'Обзор' },
-  { id: 'access', label: 'FreeIPA и права' },
+  { id: 'access', label: 'Доступ' },
   { id: 'transmitters', label: 'Транслирующие' },
   { id: 'viewers', label: 'Просматривающие' },
-  { id: 'integrations', label: 'Интеграции' },
+  { id: 'system', label: 'Система' },
 ]
 
-const roleModel = {
-  admin: { label: 'Администратор', group: 'video-admins', canView: true, canAdmin: true, canBroadcast: true },
-  operator: { label: 'Транслирующий', group: 'video-operator', canView: false, canAdmin: false, canBroadcast: true },
-  viewer: { label: 'Просматривающий', group: 'video-viewer', canView: true, canAdmin: false, canBroadcast: false },
-}
-
-const currentUser = {
-  login: serverStats.user,
-  role: 'admin',
-  groups: ['video-admins'],
-}
-
-function getOperatorProfile(stream, index) {
+function streamProfile(stream, index) {
   const number = Number(String(stream.id).match(/\d+$/)?.[0] ?? index)
-  const sources = ['DJI Agras T50', 'DJI Agras T40', 'DJI Mavic 3 Enterprise', 'DJI Matrice 350 RTK']
-  const statuses = ['Трансляция активна', 'Осмотр оборудования', 'Контроль маршрута', 'Подготовка к работе']
+  const sources = ['DJI Agras T50', 'DJI Agras T40', 'DJI Mavic 3 Enterprise', 'Камера оператора']
 
   return {
     operator: `Оператор ${number}`,
     source: sources[(number - 1) % sources.length],
-    status: statuses[(number - 1) % statuses.length],
-    battery: 72 + (number % 18),
-    viewers: Math.max(1, number % 7),
+    viewers: Math.max(1, number % 6),
+    quality: number % 3 === 0 ? 'Good' : 'Excellent',
+    battery: 70 + (number % 24),
   }
 }
 
-function requestStreamFullscreen(streamId) {
-  const element = document.querySelector(`[data-stream-video="${streamId}"]`)
-  element?.requestFullscreen?.()
+function fullscreenStream(streamId) {
+  const target = document.querySelector(`[data-stream-video="${streamId}"]`)
+  target?.requestFullscreen?.()
 }
 
 function App() {
-  const userRole = roleModel[currentUser.role]
-  const initialView = userRole.canView ? 'monitoring' : 'broadcast'
+  const role = ROLE_CONFIG[CURRENT_USER.role]
+  const [viewMode, setViewMode] = useState(role.canView ? 'monitoring' : 'broadcast')
   const [activeDepartment, setActiveDepartment] = useState('all')
   const [gridMode, setGridMode] = useState('grid-2')
   const [selectedStreams, setSelectedStreams] = useState([])
   const [streams, setStreams] = useState([])
   const [isLoading, setIsLoading] = useState(true)
   const [apiError, setApiError] = useState(null)
-  const [viewMode, setViewMode] = useState(initialView)
   const [adminSection, setAdminSection] = useState('overview')
 
   useEffect(() => {
-    let ignore = false
+    let disposed = false
 
     const loadStreams = async () => {
       try {
         const response = await fetch('/api/streams', { cache: 'no-store' })
         if (!response.ok) throw new Error(`API error: ${response.status}`)
         const data = await response.json()
-        if (!ignore) {
+
+        if (!disposed) {
           setStreams(Array.isArray(data.streams) ? data.streams : [])
           setApiError(null)
         }
       } catch (error) {
-        if (!ignore) {
+        if (!disposed) {
           setStreams([])
-          setApiError(error.message)
+          setApiError(error?.message || 'API unavailable')
         }
       } finally {
-        if (!ignore) setIsLoading(false)
+        if (!disposed) setIsLoading(false)
       }
     }
 
     loadStreams()
-    const timer = setInterval(loadStreams, 2000)
+    const timer = window.setInterval(loadStreams, 2000)
 
     return () => {
-      ignore = true
-      clearInterval(timer)
+      disposed = true
+      window.clearInterval(timer)
     }
   }, [])
 
@@ -98,159 +113,202 @@ function App() {
   }, [activeDepartment, streams])
 
   const activeDepartmentName = departments.find((item) => item.id === activeDepartment)?.name ?? 'Все трансляции'
-  const toggleStream = (streamId) => setSelectedStreams((current) => current.includes(streamId) ? current.filter((id) => id !== streamId) : [...current, streamId])
-  const selectAllVisible = () => setSelectedStreams(visibleStreams.map((stream) => stream.id))
-  const clearSelection = () => setSelectedStreams([])
+
+  const toggleStream = (streamId) => {
+    setSelectedStreams((current) => current.includes(streamId)
+      ? current.filter((id) => id !== streamId)
+      : [...current, streamId])
+  }
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand-block compact-brand">
-          <div className="brand-title">21miron</div>
-        </div>
+      <Sidebar
+        role={role}
+        viewMode={viewMode}
+        setViewMode={setViewMode}
+        activeDepartment={activeDepartment}
+        setActiveDepartment={setActiveDepartment}
+        adminSection={adminSection}
+        setAdminSection={setAdminSection}
+        streams={streams}
+        apiError={apiError}
+      />
 
-        <nav className="department-nav">
-          {userRole.canView && (
-            <button className={`department-button ${viewMode === 'monitoring' ? 'active' : ''}`} onClick={() => setViewMode('monitoring')}>
-              <span>▣</span>
-              Мониторинг
-            </button>
-          )}
-          {userRole.canBroadcast && (
-            <button className={`department-button ${viewMode === 'broadcast' ? 'active' : ''}`} onClick={() => setViewMode('broadcast')}>
-              <span>📡</span>
-              Начать трансляцию
-            </button>
-          )}
-          {userRole.canAdmin && (
-            <button className={`department-button ${viewMode === 'admin' ? 'active' : ''}`} onClick={() => setViewMode('admin')}>
-              <span>⚙</span>
-              Администрирование
-            </button>
-          )}
-        </nav>
-
-        {viewMode === 'monitoring' && userRole.canView && (
-          <nav className="department-nav secondary-nav">
-            {departments.map((department) => (
-              <button key={department.id} className={`department-button ${activeDepartment === department.id ? 'active' : ''}`} onClick={() => setActiveDepartment(department.id)}>
-                <span>{department.id === 'all' ? '●' : '▦'}</span>
-                {department.name}
-              </button>
-            ))}
-          </nav>
-        )}
-
-        {viewMode === 'admin' && userRole.canAdmin && (
-          <nav className="department-nav secondary-nav">
-            {adminSections.map((section) => (
-              <button key={section.id} className={`department-button ${adminSection === section.id ? 'active' : ''}`} onClick={() => setAdminSection(section.id)}>
-                <span>{section.id === 'access' ? '🔐' : section.id === 'transmitters' ? '📡' : section.id === 'viewers' ? '👁' : section.id === 'integrations' ? '🔌' : '📊'}</span>
-                {section.label}
-              </button>
-            ))}
-          </nav>
-        )}
-
-        <div className="sidebar-status">
-          <div className="status-line">
-            <span className={apiError ? 'pulse error' : 'pulse'} />
-            API: <b>{apiError ? 'ошибка' : 'онлайн'}</b>
-          </div>
-          <div>Роль: {userRole.label}</div>
-          <div>Группа: {userRole.group}</div>
-          <div>Транслирующих: {streams.length}</div>
-          <div>Engine: OvenMediaEngine</div>
-        </div>
-      </aside>
-
-      {viewMode === 'broadcast' && <BroadcastPanel userRole={userRole} />}
-      {viewMode === 'admin' && userRole.canAdmin && <AdminPanel activeSection={adminSection} setActiveSection={setAdminSection} streams={streams} apiError={apiError} setViewMode={setViewMode} />}
-      {viewMode === 'monitoring' && userRole.canView && (
+      {viewMode === 'monitoring' && role.canView && (
         <MonitoringDashboard
           streams={streams}
           visibleStreams={visibleStreams}
-          isLoading={isLoading}
-          apiError={apiError}
+          activeDepartmentName={activeDepartmentName}
           gridMode={gridMode}
           setGridMode={setGridMode}
           selectedStreams={selectedStreams}
           toggleStream={toggleStream}
-          selectAllVisible={selectAllVisible}
-          clearSelection={clearSelection}
-          activeDepartmentName={activeDepartmentName}
+          setSelectedStreams={setSelectedStreams}
+          isLoading={isLoading}
+          apiError={apiError}
+          role={role}
+        />
+      )}
+
+      {viewMode === 'broadcast' && role.canBroadcast && <BroadcastPanel role={role} />}
+
+      {viewMode === 'admin' && role.canAdmin && (
+        <AdminPanel
+          section={adminSection}
+          setSection={setAdminSection}
+          streams={streams}
+          apiError={apiError}
+          setViewMode={setViewMode}
         />
       )}
     </div>
   )
 }
 
-function MonitoringDashboard({ streams, visibleStreams, isLoading, apiError, gridMode, setGridMode, selectedStreams, toggleStream, selectAllVisible, clearSelection, activeDepartmentName }) {
-  const totalViewers = streams.reduce((sum, stream, index) => sum + getOperatorProfile(stream, index + 1).viewers, 0)
-  const serverStatus = apiError ? 'offline' : 'online'
+function Sidebar({ role, viewMode, setViewMode, activeDepartment, setActiveDepartment, adminSection, setAdminSection, streams, apiError }) {
+  return (
+    <aside className="sidebar">
+      <div className="brand">21miron</div>
+
+      <nav className="main-nav" aria-label="Основная навигация">
+        {role.canView && (
+          <NavButton active={viewMode === 'monitoring'} icon="▣" onClick={() => setViewMode('monitoring')}>
+            Мониторинг
+          </NavButton>
+        )}
+        {role.canBroadcast && (
+          <NavButton active={viewMode === 'broadcast'} icon="◉" onClick={() => setViewMode('broadcast')}>
+            Начать трансляцию
+          </NavButton>
+        )}
+        {role.canAdmin && (
+          <NavButton active={viewMode === 'admin'} icon="⚙" onClick={() => setViewMode('admin')}>
+            Администрирование
+          </NavButton>
+        )}
+      </nav>
+
+      {viewMode === 'monitoring' && role.canView && (
+        <nav className="sub-nav" aria-label="Отделы">
+          {departments.map((department) => (
+            <NavButton
+              key={department.id}
+              active={activeDepartment === department.id}
+              icon={department.id === 'all' ? '●' : '▦'}
+              onClick={() => setActiveDepartment(department.id)}
+            >
+              {department.name}
+            </NavButton>
+          ))}
+        </nav>
+      )}
+
+      {viewMode === 'admin' && role.canAdmin && (
+        <nav className="sub-nav" aria-label="Разделы администратора">
+          {ADMIN_SECTIONS.map((section) => (
+            <NavButton
+              key={section.id}
+              active={adminSection === section.id}
+              icon="·"
+              onClick={() => setAdminSection(section.id)}
+            >
+              {section.label}
+            </NavButton>
+          ))}
+        </nav>
+      )}
+
+      <div className="sidebar-footer">
+        <div className="status-title">
+          <StatusDot online={!apiError} />
+          API {apiError ? 'недоступен' : 'онлайн'}
+        </div>
+        <span>{role.label}</span>
+        <span>{role.group}</span>
+        <span>Активных потоков: {streams.length}</span>
+      </div>
+    </aside>
+  )
+}
+
+function NavButton({ active, icon, children, onClick }) {
+  return (
+    <button className={`nav-button ${active ? 'active' : ''}`} onClick={onClick}>
+      <span className="nav-icon">{icon}</span>
+      <span>{children}</span>
+    </button>
+  )
+}
+
+function MonitoringDashboard({ streams, visibleStreams, activeDepartmentName, gridMode, setGridMode, selectedStreams, toggleStream, setSelectedStreams, isLoading, apiError, role }) {
+  const totalViewers = streams.reduce((total, stream, index) => total + streamProfile(stream, index + 1).viewers, 0)
 
   return (
     <>
       <main className="workspace">
-        <header className="topbar">
+        <header className="page-header">
           <div>
+            <span className="eyebrow">Центр трансляций</span>
             <h1>{activeDepartmentName}</h1>
-            <p>Мониторинг транслирующих операторов, дронов, камер и состояния текущих работ.</p>
+            <p>Активные операторы, дроны, камеры и экранные трансляции.</p>
           </div>
-          <div className="topbar-card">
-            <span className={apiError ? 'pulse error' : 'connection-dot'} />
-            Сервер: <b>{serverStatus}</b>
-          </div>
+          <ServerBadge online={!apiError} />
         </header>
 
-        <section className="toolbar compact-toolbar">
-          <div className="layout-switcher">
-            {gridOptions.map((option) => (
-              <button key={option.id} className={`layout-button ${gridMode === option.id ? 'active' : ''}`} onClick={() => setGridMode(option.id)}>{option.label}</button>
+        <section className="control-row">
+          <div className="segmented-control">
+            {GRID_OPTIONS.map((option) => (
+              <button key={option.id} className={gridMode === option.id ? 'active' : ''} onClick={() => setGridMode(option.id)}>
+                {option.label}
+              </button>
             ))}
           </div>
-          <div className="selection-actions">
-            <button onClick={selectAllVisible} disabled={!visibleStreams.length}>Выбрать видимые</button>
-            <button className="danger" onClick={clearSelection}>Снять выбор</button>
+          <div className="compact-actions">
+            <button disabled={!visibleStreams.length} onClick={() => setSelectedStreams(visibleStreams.map((stream) => stream.id))}>Выбрать</button>
+            <button onClick={() => setSelectedStreams([])}>Сбросить</button>
           </div>
         </section>
 
         {isLoading ? (
-          <LoadingState />
+          <EmptyState title="Загрузка трансляций" text="Проверяем активные источники." />
         ) : visibleStreams.length === 0 ? (
-          <EmptyBroadcastState error={apiError} />
+          <EmptyState title="Нет активных трансляций" text={apiError ? `Ошибка API: ${apiError}` : 'Новый поток появится автоматически после подключения источника.'} />
         ) : (
           <section className={`stream-grid ${gridMode}`}>
             {visibleStreams.map((stream, index) => {
+              const profile = streamProfile(stream, index + 1)
               const selected = selectedStreams.includes(stream.id)
-              const profile = getOperatorProfile(stream, index + 1)
+
               return (
                 <article key={stream.id} className={`stream-card ${selected ? 'selected' : ''}`}>
-                  <div className="stream-card-header">
+                  <header className="stream-header">
                     <div>
-                      <h3>🚁 {profile.operator}</h3>
+                      <div className="stream-title-row">
+                        <StatusDot online />
+                        <h2>{profile.operator}</h2>
+                      </div>
                       <span>{profile.source}</span>
                     </div>
                     <input type="checkbox" checked={selected} onChange={() => toggleStream(stream.id)} aria-label={`Выбрать ${profile.operator}`} />
-                  </div>
+                  </header>
 
-                  <div className="video-placeholder" data-stream-video={stream.id}>
+                  <div className="video-shell" data-stream-video={stream.id}>
                     <WebRtcPlayer streamId={stream.id} title={profile.operator} />
-                    <div className="live-badge">● LIVE</div>
-                    <div className="latency-badge">{profile.status}</div>
+                    <span className="live-pill">LIVE</span>
+                    <span className="quality-pill">{profile.quality}</span>
                   </div>
 
-                  <div className="stream-meta-grid">
-                    <span>🔋 {profile.battery}%</span>
-                    <span>👁 {profile.viewers}</span>
-                    <span>📡 {stream.id}</span>
-                    <span>HD</span>
+                  <div className="stream-facts">
+                    <Fact label="Поток" value={stream.id} />
+                    <Fact label="Зрители" value={profile.viewers} />
+                    <Fact label="Батарея" value={`${profile.battery}%`} />
+                    <Fact label="Качество" value="HD" />
                   </div>
 
-                  <div className="stream-actions">
-                    <button onClick={() => requestStreamFullscreen(stream.id)}>Открыть</button>
-                    <button className="secondary" onClick={() => requestStreamFullscreen(stream.id)}>Во весь экран</button>
-                  </div>
+                  <footer className="stream-footer">
+                    <button className="primary" onClick={() => fullscreenStream(stream.id)}>Открыть</button>
+                    <button onClick={() => fullscreenStream(stream.id)}>Во весь экран</button>
+                  </footer>
                 </article>
               )
             })}
@@ -258,64 +316,84 @@ function MonitoringDashboard({ streams, visibleStreams, isLoading, apiError, gri
         )}
       </main>
 
-      <aside className="info-panel">
-        <section className="user-card">
-          <div className="avatar">👤</div>
+      <aside className="right-panel">
+        <section className="profile-card">
+          <div className="avatar">{CURRENT_USER.login.slice(0, 1).toUpperCase()}</div>
           <div>
-            <div className="muted">Пользователь</div>
-            <strong>{serverStats.user}</strong>
+            <span>Пользователь</span>
+            <strong>{CURRENT_USER.login}</strong>
           </div>
         </section>
 
-        <section className="metrics-card">
-          <h2>Оперативная сводка</h2>
-          <Metric label="Транслирующие" value={`${streams.length}`} hint="активные источники" />
-          <Metric label="Просматривающие" value={`${totalViewers}`} hint="активные пользователи" />
-          <Metric label="Сервер" value={serverStatus} hint="FastAPI · OvenMediaEngine" />
+        <section className="summary-card">
+          <div className="section-heading">
+            <span>Оперативная сводка</span>
+            <StatusDot online={!apiError} />
+          </div>
+          <SummaryRow label="Транслирующие" value={streams.length} hint="активные источники" />
+          <SummaryRow label="Просматривающие" value={totalViewers} hint="активные пользователи" />
+          <SummaryRow label="Сервер" value={apiError ? 'offline' : 'online'} hint="FastAPI · OvenMediaEngine" status />
         </section>
+
+        {role.canAdmin && (
+          <section className="admin-health-card">
+            <div className="section-heading">Система</div>
+            <HealthRow label="Backend" value={apiError ? 'Ошибка' : 'Работает'} online={!apiError} />
+            <HealthRow label="Streaming Engine" value="OvenMediaEngine" online />
+            <HealthRow label="Авторизация" value="FreeIPA planned" online={false} />
+          </section>
+        )}
       </aside>
     </>
   )
 }
 
-function BroadcastPanel({ userRole }) {
-  const [captureStatus, setCaptureStatus] = useState('Готово к выбору источника')
+function BroadcastPanel({ role }) {
   const [previewStream, setPreviewStream] = useState(null)
+  const [status, setStatus] = useState('Выберите экран или окно для предварительного просмотра.')
 
-  const startPreview = async () => {
+  const chooseSource = async () => {
     try {
       const mediaStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true })
       setPreviewStream(mediaStream)
-      setCaptureStatus('Источник выбран. Следующий этап — публикация WebRTC/WHIP в OvenMediaEngine.')
+      setStatus('Источник выбран. Публикацию в OvenMediaEngine подключим следующим этапом.')
     } catch (error) {
-      setCaptureStatus(error?.message || 'Не удалось выбрать экран или окно')
+      setStatus(error?.message || 'Не удалось выбрать источник.')
     }
   }
 
   return (
-    <main className="workspace admin-workspace">
-      <header className="topbar">
+    <main className="single-workspace">
+      <header className="page-header">
         <div>
+          <span className="eyebrow">Режим оператора</span>
           <h1>Начать трансляцию</h1>
-          <p>Раздел доступен группе FreeIPA <b>video-operator</b>. Оператор может только запускать собственную трансляцию.</p>
+          <p>Оператор может только выбрать источник и запустить собственную трансляцию.</p>
         </div>
-        <div className="topbar-card">Роль: <b>{userRole.label}</b></div>
+        <div className="role-badge">{role.group}</div>
       </header>
 
-      <section className="admin-grid">
-        <div className="admin-wide-card broadcast-card">
-          <h2>Трансляция через сайт</h2>
-          <p>Выберите экран или окно. После проверки интерфейса подключим прямую публикацию браузерного потока в OvenMediaEngine.</p>
-          <div className="admin-actions">
-            <button onClick={startPreview}>Выбрать экран или окно</button>
+      <section className="broadcast-layout">
+        <div className="broadcast-main-card">
+          <div className="broadcast-card-header">
+            <div>
+              <h2>Источник трансляции</h2>
+              <p>Выберите весь экран или отдельное окно приложения.</p>
+            </div>
+            <button className="primary-button" onClick={chooseSource}>Выбрать источник</button>
           </div>
+
           <div className="broadcast-preview">
-            {previewStream ? <VideoPreview stream={previewStream} /> : <div className="player-state">{captureStatus}</div>}
+            {previewStream ? <VideoPreview stream={previewStream} /> : <div className="preview-placeholder">{status}</div>}
           </div>
         </div>
-        <AdminCard title="Права оператора" status="video-operator" text="Только запуск собственной трансляции, без доступа к просмотру." />
-        <AdminCard title="Источник" status="Screen Capture" text="Захват экрана или выбранного окна непосредственно в браузере." />
-        <AdminCard title="Публикация" status="WHIP/WebRTC" text="Следующим этапом подключим передачу потока в OvenMediaEngine." />
+
+        <aside className="broadcast-side-card">
+          <h3>Статус</h3>
+          <HealthRow label="Источник" value={previewStream ? 'Выбран' : 'Не выбран'} online={Boolean(previewStream)} />
+          <HealthRow label="Публикация" value="Не запущена" online={false} />
+          <p>{status}</p>
+        </aside>
       </section>
     </main>
   )
@@ -325,160 +403,149 @@ function VideoPreview({ stream }) {
   return <video className="preview-video" autoPlay muted playsInline ref={(video) => { if (video && video.srcObject !== stream) video.srcObject = stream }} />
 }
 
-function AdminPanel({ activeSection, setActiveSection, streams, apiError, setViewMode }) {
+function AdminPanel({ section, setSection, streams, apiError, setViewMode }) {
   return (
-    <main className="workspace admin-workspace">
-      <header className="topbar admin-topbar">
+    <main className="single-workspace">
+      <header className="page-header">
         <div>
+          <span className="eyebrow">Управление платформой</span>
           <h1>Администрирование</h1>
-          <p>Пользователи и права назначаются во FreeIPA. Интерфейс применяет группы и показывает разрешённые разделы.</p>
+          <p>Пользователи и права будут назначаться группами FreeIPA.</p>
         </div>
-        <div className="topbar-card"><span className={apiError ? 'pulse error' : 'connection-dot'} />Backend: <b>{apiError ? 'ошибка' : 'online'}</b></div>
+        <ServerBadge online={!apiError} />
       </header>
 
-      <section className="admin-tabs">
-        {adminSections.map((section) => (
-          <button key={section.id} className={`layout-button ${activeSection === section.id ? 'active' : ''}`} onClick={() => setActiveSection(section.id)}>{section.label}</button>
+      <div className="admin-tabs">
+        {ADMIN_SECTIONS.map((item) => (
+          <button key={item.id} className={section === item.id ? 'active' : ''} onClick={() => setSection(item.id)}>{item.label}</button>
         ))}
-      </section>
+      </div>
 
-      {activeSection === 'overview' && <AdminOverview streams={streams} setViewMode={setViewMode} />}
-      {activeSection === 'access' && <AdminAccess />}
-      {activeSection === 'transmitters' && <AdminTransmitters streams={streams} />}
-      {activeSection === 'viewers' && <AdminViewers streams={streams} />}
-      {activeSection === 'integrations' && <AdminIntegrations />}
+      {section === 'overview' && (
+        <section className="admin-grid">
+          <AdminCard title="Транслирующие" value={streams.length} text="Активные источники в OvenMediaEngine." />
+          <AdminCard title="Просматривающие" value="—" text="Реальные сессии появятся после WebSocket." />
+          <AdminCard title="FreeIPA" value="planned" text="video-admins, video-operator, video-viewer." />
+          <AdminCard title="Состояние" value={apiError ? 'Ошибка' : 'Онлайн'} text="FastAPI и потоковый сервер." />
+          <div className="admin-wide-card">
+            <h2>Быстрые действия</h2>
+            <div className="compact-actions">
+              <button onClick={() => setViewMode('monitoring')}>Открыть мониторинг</button>
+              <button onClick={() => setViewMode('broadcast')}>Тест трансляции</button>
+              <button onClick={() => navigator.clipboard?.writeText('rtmp://10.77.77.1:1935/app')}>Копировать RTMP URL</button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {section === 'access' && (
+        <section className="admin-wide-card">
+          <h2>Роли FreeIPA</h2>
+          <RoleRow group="video-admins" rights="Мониторинг, администрирование и диагностика." />
+          <RoleRow group="video-operator" rights="Только запуск собственной трансляции." />
+          <RoleRow group="video-viewer" rights="Только просмотр разрешённых трансляций." />
+        </section>
+      )}
+
+      {section === 'transmitters' && <StreamList streams={streams} />}
+
+      {section === 'viewers' && (
+        <section className="admin-wide-card">
+          <h2>Просматривающие</h2>
+          <p>После подключения FreeIPA и WebSocket здесь появятся реальные пользователи и открытые ими трансляции.</p>
+        </section>
+      )}
+
+      {section === 'system' && (
+        <section className="admin-grid">
+          <AdminCard title="Backend" value={apiError ? 'Ошибка' : 'Онлайн'} text="FastAPI API." />
+          <AdminCard title="Streaming Engine" value="OME" text="RTMP ingest и WebRTC playback." />
+          <AdminCard title="WebSocket" value="next" text="Заменит polling /streams." />
+          <AdminCard title="FreeIPA" value="next" text="Единая авторизация и роли." />
+        </section>
+      )}
     </main>
   )
 }
 
-function AdminOverview({ streams, setViewMode }) {
+function StreamList({ streams }) {
   return (
-    <section className="admin-grid">
-      <AdminCard title="Транслирующие" status={`${streams.length} online`} text="Активные операторы, дроны, камеры и экранные трансляции." />
-      <AdminCard title="Просматривающие" status="роль viewer" text="Пользователи с правом просмотра активных трансляций." />
-      <AdminCard title="FreeIPA" status="source of truth" text="Группы video-admins, video-operator и video-viewer управляют доступом." />
-      <AdminCard title="Сайт-трансляция" status="этап 1" text="Добавлен интерфейс выбора окна или экрана для оператора." />
-      <div className="admin-wide-card">
-        <h2>Быстрые действия</h2>
-        <div className="admin-actions">
-          <button onClick={() => setViewMode('monitoring')}>Открыть мониторинг</button>
-          <button onClick={() => setViewMode('broadcast')}>Открыть трансляцию через сайт</button>
-          <button onClick={() => navigator.clipboard?.writeText('rtmp://10.77.77.1:1935/app')}>Скопировать RTMP URL для OBS</button>
-        </div>
+    <section className="admin-wide-card">
+      <h2>Транслирующие онлайн</h2>
+      <div className="stream-list">
+        {streams.length === 0 ? <p>Активных источников нет.</p> : streams.map((stream, index) => {
+          const profile = streamProfile(stream, index + 1)
+          return (
+            <div className="stream-list-row" key={stream.id}>
+              <div><strong>{profile.operator}</strong><span>{profile.source}</span></div>
+              <code>{stream.id}</code>
+              <button onClick={() => navigator.clipboard?.writeText(stream.webrtcUrl)}>Копировать URL</button>
+            </div>
+          )
+        })}
       </div>
     </section>
   )
 }
 
-function AdminAccess() {
-  return (
-    <section className="admin-grid">
-      <div className="admin-wide-card">
-        <h2>Модель доступа через FreeIPA</h2>
-        <p>Локально пользователей не создаём. FreeIPA назначает группу, а приложение показывает только разрешённые разделы.</p>
-        <div className="role-table">
-          <RoleRow group="video-admins" rights="Администратор: мониторинг, администрирование, интеграции, просмотр и тестовая трансляция." />
-          <RoleRow group="video-operator" rights="Транслирующий: только вкладка Начать трансляцию. Просмотр чужих потоков запрещён." />
-          <RoleRow group="video-viewer" rights="Просматривающий: только мониторинг и просмотр разрешённых трансляций." />
-        </div>
-      </div>
-      <AdminCard title="Администраторы" status="video-admins" text="Настройки платформы, связка с FreeIPA, потоки и интеграции." />
-      <AdminCard title="Транслирующие" status="video-operator" text="Запуск OBS или браузерной трансляции без доступа к просмотру." />
-      <AdminCard title="Просматривающие" status="video-viewer" text="Просмотр разрешённых трансляций и состояния источников." />
-    </section>
-  )
+function StatusDot({ online }) {
+  return <span className={`status-dot ${online ? 'online' : 'offline'}`} />
 }
 
-function AdminTransmitters({ streams }) {
+function ServerBadge({ online }) {
   return (
-    <section className="admin-grid">
-      <div className="admin-wide-card">
-        <h2>Транслирующие онлайн</h2>
-        <p>Операторы и источники, которые сейчас публикуют поток в OvenMediaEngine.</p>
-        <div className="stream-admin-list">
-          {streams.length === 0 ? <div className="muted">Сейчас активных транслирующих нет.</div> : streams.map((stream, index) => {
-            const profile = getOperatorProfile(stream, index + 1)
-            return (
-              <div className="stream-admin-row" key={stream.id}>
-                <div><strong>{profile.operator}</strong><small>{profile.source} · {profile.status}</small></div>
-                <span>{stream.id}</span>
-                <button onClick={() => navigator.clipboard?.writeText(stream.webrtcUrl)}>Копировать WebRTC</button>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-      <AdminCard title="OBS" status="работает" text="rtmp://10.77.77.1:1935/app, ключ testN." />
-      <AdminCard title="Через сайт" status="следующий этап" text="Браузерный захват экрана или окна с публикацией в OME." />
-      <AdminCard title="Автообнаружение" status="active" text="Новые активные потоки автоматически появляются в мониторинге." />
-    </section>
-  )
-}
-
-function AdminViewers({ streams }) {
-  const totalViewers = streams.reduce((sum, stream, index) => sum + getOperatorProfile(stream, index + 1).viewers, 0)
-  return (
-    <section className="admin-grid">
-      <AdminCard title="Просматривающие" status={`${totalViewers} active`} text="Пока расчёт демонстрационный. После FreeIPA и WebSocket будем считать реальные сессии." />
-      <AdminCard title="Роль" status="video-viewer" text="Пользователь может только смотреть разрешённые трансляции." />
-      <AdminCard title="Операторы" status="no view" text="video-operator не получает доступ к странице мониторинга." />
-      <div className="admin-wide-card"><h2>Будущая модель просмотра</h2><p>Backend будет хранить, кто смотрит какой поток. Эти данные передадим в интерфейс через WebSocket.</p></div>
-    </section>
-  )
-}
-
-function AdminIntegrations() {
-  return (
-    <section className="admin-grid">
-      <AdminCard title="FreeIPA" status="next" text="Подключить группы video-admins, video-operator, video-viewer." />
-      <AdminCard title="WebSocket" status="next" text="Заменить polling на живые события: появился поток, пропал поток, подключился зритель." />
-      <AdminCard title="OvenMediaEngine" status="active" text="RTMP ingest, WebRTC playback и будущая browser publishing интеграция." />
-      <AdminCard title="Grafana/Zabbix" status="planned" text="Мониторинг нагрузки, потоков, зрителей и ошибок." />
-    </section>
-  )
-}
-
-function AdminCard({ title, status, text }) {
-  return (
-    <div className="admin-card">
-      <div className="admin-card-head"><h2>{title}</h2><span>{status}</span></div>
-      <p>{text}</p>
+    <div className="server-badge">
+      <StatusDot online={online} />
+      <span>Сервер</span>
+      <strong>{online ? 'online' : 'offline'}</strong>
     </div>
+  )
+}
+
+function Fact({ label, value }) {
+  return <div className="fact"><span>{label}</span><strong>{value}</strong></div>
+}
+
+function SummaryRow({ label, value, hint, status }) {
+  return (
+    <div className="summary-row">
+      <div><span>{label}</span><small>{hint}</small></div>
+      <strong className={status ? String(value).toLowerCase() : ''}>{value}</strong>
+    </div>
+  )
+}
+
+function HealthRow({ label, value, online }) {
+  return (
+    <div className="health-row">
+      <div><StatusDot online={online} /><span>{label}</span></div>
+      <strong>{value}</strong>
+    </div>
+  )
+}
+
+function EmptyState({ title, text }) {
+  return (
+    <section className="empty-state">
+      <div className="empty-mark">◉</div>
+      <h2>{title}</h2>
+      <p>{text}</p>
+    </section>
+  )
+}
+
+function AdminCard({ title, value, text }) {
+  return (
+    <article className="admin-card">
+      <span>{title}</span>
+      <strong>{value}</strong>
+      <p>{text}</p>
+    </article>
   )
 }
 
 function RoleRow({ group, rights }) {
-  return <div className="role-row"><strong>{group}</strong><span>{rights}</span></div>
-}
-
-function LoadingState() {
-  return (
-    <section className="empty-broadcast">
-      <div className="empty-icon">⏳</div>
-      <h2>Загрузка списка трансляций</h2>
-      <p>Проверяем состояние OvenMediaEngine и активных операторов.</p>
-    </section>
-  )
-}
-
-function EmptyBroadcastState({ error }) {
-  return (
-    <section className="empty-broadcast">
-      <div className="empty-icon">🚁</div>
-      <h2>Сейчас нет активных трансляций</h2>
-      <p>{error ? `Ошибка API: ${error}` : 'Когда оператор или источник начнёт трансляцию, карточка автоматически появится в мониторинге.'}</p>
-      <div className="empty-details"><span>OBS ingest</span><b>10.77.77.1:1935/app · testN</b></div>
-    </section>
-  )
-}
-
-function Metric({ label, value, hint }) {
-  return (
-    <div className="metric-row">
-      <div><span>{label}</span><small>{hint}</small></div>
-      <b>{value}</b>
-    </div>
-  )
+  return <div className="role-row"><code>{group}</code><span>{rights}</span></div>
 }
 
 export default App
